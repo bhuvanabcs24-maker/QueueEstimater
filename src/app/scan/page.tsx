@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import jsQR from 'jsqr';
@@ -13,56 +13,26 @@ export default function ScanPage() {
   const [scanning, setScanning] = useState(true);
   const [manualCode, setManualCode] = useState('');
   const streamRef = useRef<MediaStream | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    // Start camera stream on mount
-    startCamera();
-
-    return () => {
-      // Release camera resources on unmount
-      stopCamera();
-    };
-  }, []);
-
-  const startCamera = async () => {
-    setCameraError('');
-    try {
-      const constraints = {
-        video: { facingMode: 'environment' } // Prefer rear camera on mobile
-      };
-      
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      streamRef.current = stream;
-      
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.setAttribute('playsinline', 'true'); // Required for iOS Safari
-        videoRef.current.play();
-        requestAnimationFrame(tick);
-      }
-    } catch (err: any) {
-      console.error('Camera access error:', err);
-      setCameraError(
-        'Unable to access camera. Please grant camera permission or use the manual code input below.'
-      );
+  const stopCamera = useCallback(() => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
     }
-  };
-
-  const stopCamera = () => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
-  };
+  }, []);
 
-  const tick = () => {
+  const tick = useCallback(() => {
     if (!scanning || !videoRef.current || !canvasRef.current) return;
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
 
-    // Make sure video is ready and has valid dimensions
     if (video.readyState === video.HAVE_ENOUGH_DATA && ctx) {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
@@ -74,38 +44,78 @@ export default function ScanPage() {
       });
 
       if (code) {
-        // Stop scanning and camera
         setScanning(false);
         stopCamera();
 
-        // Extract location ID. Standard format in QR:
-        // https://yourapp.com/location/[id] or just the raw ID
-        let locationId = code.data;
-        if (code.data.includes('/location/')) {
-          const parts = code.data.split('/location/');
-          locationId = parts[parts.length - 1].split('?')[0]; // Extract UUID/ID part
+        // Extract location ID from URL or raw ID
+        let locationId = code.data.trim();
+        if (locationId.includes('/location/')) {
+          const parts = locationId.split('/location/');
+          locationId = parts[parts.length - 1].split('?')[0];
         }
 
-        // Vibrate to provide haptic feedback if supported
         if (navigator.vibrate) {
-          navigator.vibrate(200);
+          navigator.vibrate(150);
         }
 
-        // Navigate to the scanned location detail page
-        router.push(`/location/${locationId}`);
+        router.push(`/location/${encodeURIComponent(locationId)}`);
         return;
       }
     }
 
-    requestAnimationFrame(tick);
-  };
+    animationFrameRef.current = requestAnimationFrame(tick);
+  }, [scanning, stopCamera, router]);
+
+  const startCamera = useCallback(async () => {
+    setCameraError('');
+    setScanning(true);
+
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Camera access is not supported by your current browser.');
+      }
+
+      const constraints = {
+        video: { facingMode: { ideal: 'environment' } }
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      streamRef.current = stream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.setAttribute('playsinline', 'true');
+        await videoRef.current.play();
+        animationFrameRef.current = requestAnimationFrame(tick);
+      }
+    } catch (err: unknown) {
+      console.warn('Camera initialization error:', err);
+      const message = err instanceof Error && err.name === 'NotAllowedError'
+        ? 'Camera permission was denied. Please allow camera access in browser settings or use the facility code below.'
+        : 'Unable to access camera hardware. You can select or type a facility code below to proceed.';
+      setCameraError(message);
+    }
+  }, [tick]);
+
+  useEffect(() => {
+    startCamera();
+    return () => {
+      stopCamera();
+    };
+  }, [startCamera, stopCamera]);
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualCode.trim()) return;
     setScanning(false);
     stopCamera();
-    router.push(`/location/${manualCode.trim()}`);
+    router.push(`/location/${encodeURIComponent(manualCode.trim())}`);
+  };
+
+  const handleSelectSample = (id: string) => {
+    setScanning(false);
+    stopCamera();
+    router.push(`/location/${id}`);
   };
 
   return (
@@ -116,28 +126,30 @@ export default function ScanPage() {
           <div className="brand-icon">⬅️</div>
           <span>Back to Home</span>
         </Link>
-        <span className="badge badge-success">Live Scan</span>
+        <span className="badge badge-success">QR Scanner</span>
       </header>
 
       {/* Main Content */}
       <div className="app-content">
-        <div style={{ textAlign: 'center' }}>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '6px' }}>Scan QR Code</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-            Position the clinic QR code inside the frame to check in automatically.
+        <div style={{ textAlign: 'center', marginTop: '4px' }}>
+          <h1 style={{ fontSize: '1.35rem', fontWeight: 800, marginBottom: '6px' }}>Scan QR Code</h1>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', lineHeight: '1.4' }}>
+            Aim your camera at the physical QR code displayed at the facility entrance.
           </p>
         </div>
 
-        {/* Viewfinder scanner block */}
+        {/* Viewfinder scanner container */}
         {!cameraError ? (
           <div className="scanner-container">
             <video
               ref={videoRef}
               style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              muted
+              playsInline
             />
             <canvas ref={canvasRef} style={{ display: 'none' }} />
             
-            {/* Premium animating scan target */}
+            {/* Animating scan target */}
             <div className="scanner-overlay">
               <div className="scanner-target">
                 <div className="scanner-laser" />
@@ -145,35 +157,28 @@ export default function ScanPage() {
             </div>
           </div>
         ) : (
-          <div 
-            style={{ 
-              background: 'var(--danger-glow)', 
-              border: '1px solid rgba(248, 113, 113, 0.2)', 
-              padding: '24px 16px', 
-              borderRadius: 'var(--radius-lg)', 
-              textAlign: 'center',
-              fontSize: '0.9rem',
-              color: 'var(--danger)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '12px'
-            }}
-          >
+          <div className="notification-banner notification-banner-warning" style={{ flexDirection: 'column', gap: '10px', padding: '16px' }}>
             <div>⚠️ {cameraError}</div>
-            <button onClick={startCamera} className="btn btn-secondary" style={{ width: 'fit-content', margin: '0 auto', fontSize: '0.8rem', padding: '8px 16px' }}>
-              🔄 Try Camera Again
+            <button 
+              onClick={startCamera} 
+              className="btn btn-secondary" 
+              style={{ minHeight: '36px', height: '36px', fontSize: '0.8rem', padding: '0 16px', width: 'fit-content' }}
+            >
+              🔄 Retry Camera
             </button>
           </div>
         )}
 
         {/* Manual Fallback Input */}
-        <div className="card glass" style={{ marginTop: '8px' }}>
-          <h3 style={{ fontSize: '0.95rem', fontWeight: '700' }}>Can't scan the code?</h3>
-          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '-4px' }}>
-            Enter the clinic ID code shown at the bottom of the QR code printout.
-          </p>
+        <div className="card glass" style={{ marginTop: '4px', gap: '12px' }}>
+          <div>
+            <h2 style={{ fontSize: '0.95rem', fontWeight: 700 }}>Can't scan the QR code?</h2>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+              Enter the location code printed beneath the QR code, or pick a sample location:
+            </p>
+          </div>
 
-          <form onSubmit={handleManualSubmit} className="form-group" style={{ flexDirection: 'row', gap: '8px', marginTop: '4px' }}>
+          <form onSubmit={handleManualSubmit} className="form-group" style={{ flexDirection: 'row', gap: '8px' }}>
             <input
               id="manual-code-input"
               type="text"
@@ -187,12 +192,66 @@ export default function ScanPage() {
               id="manual-submit-btn"
               type="submit"
               className="btn btn-primary"
-              style={{ width: 'auto', padding: '10px 18px', fontSize: '0.9rem' }}
+              style={{ width: 'auto', padding: '10px 20px', fontSize: '0.9rem' }}
               disabled={!manualCode.trim()}
             >
               Go
             </button>
           </form>
+
+          {/* Quick preset buttons for viva evaluation without a printed QR code */}
+          <div style={{ marginTop: '4px' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '8px' }}>
+              Quick Test Presets:
+            </span>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => handleSelectSample('mock-clinic-a')}
+                className="btn btn-secondary"
+                style={{ 
+                  minHeight: '32px', 
+                  height: '32px', 
+                  padding: '0 10px', 
+                  fontSize: '0.75rem', 
+                  width: 'auto',
+                  background: 'rgba(255,255,255,0.04)' 
+                }}
+              >
+                🏥 General Clinic A
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSelectSample('mock-lab-b')}
+                className="btn btn-secondary"
+                style={{ 
+                  minHeight: '32px', 
+                  height: '32px', 
+                  padding: '0 10px', 
+                  fontSize: '0.75rem', 
+                  width: 'auto',
+                  background: 'rgba(255,255,255,0.04)' 
+                }}
+              >
+                🔬 Express Lab B
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSelectSample('mock-peds-c')}
+                className="btn btn-secondary"
+                style={{ 
+                  minHeight: '32px', 
+                  height: '32px', 
+                  padding: '0 10px', 
+                  fontSize: '0.75rem', 
+                  width: 'auto',
+                  background: 'rgba(255,255,255,0.04)' 
+                }}
+              >
+                👶 Pediatrics C
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </>

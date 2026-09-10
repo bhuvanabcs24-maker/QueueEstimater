@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { supabase } from '../lib/supabase';
 import { calculateDistance } from '../lib/geofence';
 
@@ -22,6 +21,16 @@ interface Location {
   estimate?: LocationEstimate;
 }
 
+interface ActiveCheckInInfo {
+  id: string;
+  location_id?: string;
+  location_name?: string;
+  locations?: {
+    name: string;
+  };
+  event_type: string;
+}
+
 const MOCK_LOCATIONS: Location[] = [
   { id: 'mock-clinic-a', name: 'General Medicine Clinic A', address: '100 Medical Plaza, Suite 4', category: 'Clinic', lat: 37.7749, lng: -122.4194, estimate: { current_queue_length: 2, avg_wait_minutes: 24 } },
   { id: 'mock-lab-b', name: 'Express Lab Services', address: '100 Medical Plaza, Suite 12', category: 'Laboratory', lat: 37.7752, lng: -122.4189, estimate: { current_queue_length: 0, avg_wait_minutes: 0 } },
@@ -29,42 +38,55 @@ const MOCK_LOCATIONS: Location[] = [
 ];
 
 export default function LandingPage() {
-  const router = useRouter();
   const [searchQuery, setSearchQuery] = useState('');
   const [locations, setLocations] = useState<Location[]>([]);
   const [loading, setLoading] = useState(true);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [gpsLoading, setGpsLoading] = useState(false);
-  const [activeCheckIn, setActiveCheckIn] = useState<any>(null);
+  const [activeCheckIn, setActiveCheckIn] = useState<ActiveCheckInInfo | null>(null);
   const [userPhone, setUserPhone] = useState<string | null>(null);
+  const [notification, setNotification] = useState<{ type: 'warning' | 'error' | 'info'; message: string } | null>(null);
+  const [isDemoMode, setIsDemoMode] = useState(false);
 
   useEffect(() => {
+    // Check if running in demo simulation mode
+    const isPlaceholder = 
+      process.env.NEXT_PUBLIC_SUPABASE_URL?.includes('placeholder') || 
+      !process.env.NEXT_PUBLIC_SUPABASE_URL;
+    setIsDemoMode(isPlaceholder);
+
     // Determine if user is logged in
     const checkUserSession = async () => {
-      // Check local storage for demo auth
       const demoPhone = localStorage.getItem('demo_authenticated_phone');
       if (demoPhone) {
         setUserPhone(demoPhone);
-        // Check if there is an active checkin in local storage
         const demoCheckIn = localStorage.getItem('demo_active_check_in');
         if (demoCheckIn) {
-          setActiveCheckIn(JSON.parse(demoCheckIn));
+          try {
+            setActiveCheckIn(JSON.parse(demoCheckIn));
+          } catch {
+            localStorage.removeItem('demo_active_check_in');
+          }
         }
       } else {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
-          setUserPhone(session.user.phone || 'Verified User');
-          // Query active checkin for this user
-          const { data } = await supabase
-            .from('queue_events')
-            .select('*, locations(*)')
-            .eq('user_id', session.user.id)
-            .order('created_at', { ascending: false })
-            .limit(1);
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user) {
+            setUserPhone(session.user.phone || session.user.email || 'Verified User');
+            // Query active checkin for this user
+            const { data } = await supabase
+              .from('queue_events')
+              .select('id, location_id, event_type, created_at, locations(name)')
+              .eq('user_id', session.user.id)
+              .order('created_at', { ascending: false })
+              .limit(1);
 
-          if (data && data.length > 0 && data[0].event_type === 'check_in') {
-            setActiveCheckIn(data[0]);
+            if (data && data.length > 0 && data[0].event_type === 'check_in') {
+              setActiveCheckIn(data[0] as unknown as ActiveCheckInInfo);
+            }
           }
+        } catch {
+          // Silent fallback if session lookup fails
         }
       }
     };
@@ -76,7 +98,9 @@ export default function LandingPage() {
   const fetchLocations = async () => {
     setLoading(true);
     try {
-      const isPlaceholder = process.env.NEXT_PUBLIC_SUPABASE_URL?.includes('placeholder') || !process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const isPlaceholder = 
+        process.env.NEXT_PUBLIC_SUPABASE_URL?.includes('placeholder') || 
+        !process.env.NEXT_PUBLIC_SUPABASE_URL;
       
       if (isPlaceholder) {
         setLocations(MOCK_LOCATIONS);
@@ -84,7 +108,7 @@ export default function LandingPage() {
         return;
       }
 
-      // Fetch official locations from database
+      // Fetch locations from database
       const { data: locData, error: locError } = await supabase
         .from('locations')
         .select('*');
@@ -107,7 +131,7 @@ export default function LandingPage() {
           lng: loc.lng,
           estimate: est ? {
             current_queue_length: est.current_queue_length || 0,
-            avg_wait_minutes: est.avg_wait_minutes || 0
+            avg_wait_minutes: Number(est.avg_wait_minutes) || 0
           } : {
             current_queue_length: 0,
             avg_wait_minutes: 0
@@ -116,8 +140,8 @@ export default function LandingPage() {
       });
 
       setLocations(mappedLocations.length > 0 ? mappedLocations : MOCK_LOCATIONS);
-    } catch (err) {
-      console.error('Error fetching locations, using mock data:', err);
+    } catch {
+      // Fallback to sample directory gracefully
       setLocations(MOCK_LOCATIONS);
     } finally {
       setLoading(false);
@@ -126,8 +150,12 @@ export default function LandingPage() {
 
   // Ask for GPS coordinates to calculate proximity
   const requestGPS = () => {
+    setNotification(null);
     if (!navigator.geolocation) {
-      alert('Geolocation is not supported by your browser.');
+      setNotification({
+        type: 'warning',
+        message: 'Geolocation is not supported by your current browser.'
+      });
       return;
     }
 
@@ -138,10 +166,12 @@ export default function LandingPage() {
         setUserLocation({ lat: latitude, lng: longitude });
         setGpsLoading(false);
       },
-      (error) => {
-        console.error('GPS error:', error);
+      (geoError) => {
         setGpsLoading(false);
-        alert('Could not retrieve GPS coordinates. Listing locations by default.');
+        const msg = geoError.code === geoError.PERMISSION_DENIED
+          ? 'Location access was denied. Showing all locations by default.'
+          : 'Could not acquire GPS position. Showing all locations by default.';
+        setNotification({ type: 'info', message: msg });
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
@@ -176,7 +206,11 @@ export default function LandingPage() {
   const handleLogout = async () => {
     localStorage.removeItem('demo_authenticated_phone');
     localStorage.removeItem('demo_active_check_in');
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // Ignore errors on signout
+    }
     window.location.reload();
   };
 
@@ -195,20 +229,39 @@ export default function LandingPage() {
       <header className="app-header glass">
         <div className="brand">
           <div className="brand-icon">⏳</div>
-          <span>QWait Estimator</span>
+          <span>QWait</span>
         </div>
         {userPhone ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{userPhone}</span>
             <button 
               onClick={handleLogout} 
-              style={{ background: 'none', border: 'none', color: 'var(--danger)', fontSize: '0.8rem', cursor: 'pointer', textDecoration: 'underline' }}
+              style={{ 
+                background: 'none', 
+                border: 'none', 
+                color: 'var(--danger)', 
+                fontSize: '0.8rem', 
+                cursor: 'pointer', 
+                textDecoration: 'underline',
+                minHeight: 'auto',
+                padding: '4px'
+              }}
             >
               Log out
             </button>
           </div>
         ) : (
-          <Link href="/login" className="badge" style={{ background: 'var(--accent)', color: '#0d0f12', fontWeight: 'bold' }}>
+          <Link 
+            href="/login" 
+            className="badge" 
+            style={{ 
+              background: 'var(--accent)', 
+              color: '#0d0f12', 
+              fontWeight: 'bold', 
+              textDecoration: 'none',
+              padding: '6px 14px' 
+            }}
+          >
             Log In
           </Link>
         )}
@@ -216,17 +269,48 @@ export default function LandingPage() {
 
       {/* Main Content */}
       <div className="app-content">
+        {/* Notification Banner */}
+        {notification && (
+          <div className={`notification-banner notification-banner-${notification.type}`}>
+            <span style={{ flex: 1 }}>{notification.message}</span>
+            <button 
+              onClick={() => setNotification(null)}
+              style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', minHeight: 'auto', padding: '0 4px', fontWeight: 'bold' }}
+              aria-label="Close notification"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* Demo Mode Notice */}
+        {isDemoMode && (
+          <div className="notification-banner notification-banner-warning">
+            <span>
+              ℹ️ <strong>Academic Demo Mode:</strong> Running with local simulated data. Enter any phone with OTP <strong>123456</strong> to test full queue flows.
+            </span>
+          </div>
+        )}
+
         {/* Active Queue Tracker Header Card */}
         {activeCheckIn && (
-          <Link href="/my-queue" className="card glass card-interactive" style={{ border: '1px solid var(--accent)', background: 'var(--accent-glow)', textDecoration: 'none' }}>
-            <div style={{ display: 'flex', justifyContent: 'between', alignItems: 'center' }}>
+          <Link 
+            href="/my-queue" 
+            className="card glass card-interactive" 
+            style={{ 
+              border: '1px solid var(--accent)', 
+              background: 'var(--accent-glow)', 
+              textDecoration: 'none' 
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
                 <span className="badge badge-success" style={{ marginBottom: '8px' }}>Active Check-In</span>
-                <h3 style={{ fontSize: '1.1rem', fontWeight: '700', color: '#fff' }}>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#fff' }}>
                   {activeCheckIn.locations?.name || activeCheckIn.location_name || 'Clinic Queue'}
                 </h3>
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                  Tap to open live tracker countdown
+                  Tap to open live tracker countdown & position
                 </p>
               </div>
               <div style={{ marginLeft: 'auto', fontSize: '1.5rem' }}>➡️</div>
@@ -235,12 +319,12 @@ export default function LandingPage() {
         )}
 
         {/* Hero search area */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-          <h2 style={{ fontSize: '1.35rem', fontWeight: 800, letterSpacing: '-0.02em' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+          <h1 style={{ fontSize: '1.4rem', fontWeight: 800, letterSpacing: '-0.02em', lineHeight: 1.25 }}>
             Know your wait before you stand in line
-          </h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: '1.4' }}>
-            Find a clinic or scan a QR code at the site to check in.
+          </h1>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', lineHeight: '1.4' }}>
+            Find a facility or scan a QR code at the entrance to join the digital queue.
           </p>
         </div>
 
@@ -271,9 +355,9 @@ export default function LandingPage() {
         {/* Locations List */}
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              {userLocation ? 'Sorted by Proximity' : 'Available Locations'}
-            </h3>
+            <h2 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              {userLocation ? 'Sorted by Proximity' : 'Available Facilities'}
+            </h2>
             {userLocation && (
               <span style={{ fontSize: '0.75rem', color: 'var(--accent)' }}>GPS Enabled</span>
             )}
@@ -290,8 +374,15 @@ export default function LandingPage() {
                 </div>
               ))
             ) : filteredLocations.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--text-secondary)' }}>
-                No locations match "{searchQuery}"
+              <div className="card glass" style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--text-secondary)' }}>
+                <p style={{ marginBottom: '12px' }}>No facilities match "{searchQuery}"</p>
+                <button 
+                  onClick={() => setSearchQuery('')}
+                  className="btn btn-secondary"
+                  style={{ width: 'auto', margin: '0 auto', fontSize: '0.85rem', padding: '8px 16px' }}
+                >
+                  Clear Search Filter
+                </button>
               </div>
             ) : (
               filteredLocations.map((loc) => (
@@ -303,7 +394,7 @@ export default function LandingPage() {
                 >
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '12px' }}>
-                      <h4 style={{ fontSize: '1.05rem', fontWeight: '700', color: '#fff' }}>{loc.name}</h4>
+                      <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: '#fff' }}>{loc.name}</h3>
                       <span className="badge" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}>
                         {loc.category}
                       </span>
@@ -333,7 +424,7 @@ export default function LandingPage() {
 
       {/* Sticky Bottom Camera Scanner CTA */}
       <div className="sticky-bottom">
-        <Link href="/scan" className="btn btn-primary" id="scan-qr-cta">
+        <Link href="/scan" className="btn btn-primary" id="scan-qr-cta" style={{ textDecoration: 'none' }}>
           📷 Scan QR to Check In
         </Link>
       </div>

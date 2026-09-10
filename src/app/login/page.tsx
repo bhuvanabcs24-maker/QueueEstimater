@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { supabase } from '../../lib/supabase';
 
 export default function LoginPage() {
@@ -12,6 +13,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [isDemoMode, setIsDemoMode] = useState(false);
+  const otpInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     // Check if Supabase keys are default placeholders
@@ -22,16 +24,35 @@ export default function LoginPage() {
     setIsDemoMode(isPlaceholder);
 
     // If user is already logged in, redirect to home
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
+    const checkSession = async () => {
+      const demoPhone = localStorage.getItem('demo_authenticated_phone');
+      if (demoPhone) {
         router.push('/');
+        return;
       }
-    });
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          router.push('/');
+        }
+      } catch {
+        // Ignore session check error
+      }
+    };
+
+    checkSession();
   }, [router]);
+
+  useEffect(() => {
+    if (step === 'otp' && otpInputRef.current) {
+      otpInputRef.current.focus();
+    }
+  }, [step]);
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!phone) return;
+    if (!phone.trim()) return;
 
     setLoading(true);
     setError('');
@@ -42,7 +63,7 @@ export default function LoginPage() {
         setTimeout(() => {
           setStep('otp');
           setLoading(false);
-        }, 800);
+        }, 600);
         return;
       }
 
@@ -52,18 +73,19 @@ export default function LoginPage() {
         formattedPhone = '+' + formattedPhone;
       }
 
-      const { error } = await supabase.auth.signInWithOtp({
+      const { error: otpError } = await supabase.auth.signInWithOtp({
         phone: formattedPhone,
       });
 
-      if (error) {
-        throw error;
+      if (otpError) {
+        throw otpError;
       }
 
       setStep('otp');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('OTP Send error:', err);
-      setError(err.message || 'Failed to send OTP code. Please check the number.');
+      const message = err instanceof Error ? err.message : 'Failed to send OTP code. Please check your phone number.';
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -71,7 +93,7 @@ export default function LoginPage() {
 
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!otp) return;
+    if (!otp.trim()) return;
 
     setLoading(true);
     setError('');
@@ -80,10 +102,10 @@ export default function LoginPage() {
       if (isDemoMode) {
         if (otp.trim() === '123456') {
           // Set mock user session in localStorage so client is authenticated in demo
-          localStorage.setItem('demo_authenticated_phone', phone);
+          localStorage.setItem('demo_authenticated_phone', phone.trim() || '+1 (555) 019-2834');
           router.push('/');
         } else {
-          throw new Error('Invalid OTP code. Use "123456" for demo simulation.');
+          throw new Error('Invalid OTP code. Please enter 123456 for the demo simulation.');
         }
         return;
       }
@@ -93,124 +115,178 @@ export default function LoginPage() {
         formattedPhone = '+' + formattedPhone;
       }
 
-      const { data, error } = await supabase.auth.verifyOtp({
+      const { data, error: verifyError } = await supabase.auth.verifyOtp({
         phone: formattedPhone,
         token: otp.trim(),
         type: 'sms',
       });
 
-      if (error) {
-        throw error;
+      if (verifyError) {
+        throw verifyError;
       }
 
       if (data?.session) {
         router.push('/');
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('OTP Verification error:', err);
-      setError(err.message || 'Verification failed. Please try again.');
+      const message = err instanceof Error ? err.message : 'Verification failed. Please check the code and try again.';
+      setError(message);
     } finally {
       setLoading(false);
     }
   };
 
+  const fillDemoCredentials = () => {
+    setPhone('+1 (555) 019-2834');
+    setError('');
+  };
+
   return (
-    <div className="app-content" style={{ justifyContent: 'center', minHeight: '80vh' }}>
-      <div className="card glass" style={{ padding: '32px 24px', gap: '24px' }}>
-        <div style={{ textAlign: 'center' }}>
-          <div className="brand-icon" style={{ width: '48px', height: '48px', margin: '0 auto 16px auto', fontSize: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            ⏳
-          </div>
-          <h1 style={{ fontSize: '1.75rem', fontWeight: 800, marginBottom: '8px', letterSpacing: '-0.02em' }}>
-            {step === 'phone' ? 'Verify Phone' : 'Enter OTP'}
-          </h1>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: '1.4' }}>
-            {step === 'phone' 
-              ? 'Enter your mobile number to check in or track your queue place.' 
-              : `We sent a 6-digit confirmation code to ${phone}.`}
-          </p>
-        </div>
+    <>
+      <header className="app-header glass">
+        <Link href="/" className="brand" style={{ textDecoration: 'none' }}>
+          <div className="brand-icon">⬅️</div>
+          <span>Back to Home</span>
+        </Link>
+        <span className="badge badge-success">Secure Login</span>
+      </header>
 
-        {isDemoMode && (
-          <div style={{ background: 'var(--warning-glow)', border: '1px solid rgba(251, 191, 36, 0.2)', padding: '12px', borderRadius: 'var(--radius-sm)', fontSize: '0.8rem', color: 'var(--warning)' }}>
-            ⚠️ <strong>Simulation Mode Active</strong><br />
-            Supabase is not configured. Enter any phone and use OTP code <strong>123456</strong> to test.
-          </div>
-        )}
-
-        {error && (
-          <div style={{ background: 'var(--danger-glow)', border: '1px solid rgba(248, 113, 113, 0.2)', padding: '12px', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem', color: 'var(--danger)', textAlign: 'center' }}>
-            {error}
-          </div>
-        )}
-
-        {step === 'phone' ? (
-          <form onSubmit={handleSendOtp} className="form-group" style={{ gap: '16px' }}>
-            <div className="form-group">
-              <label className="form-label" htmlFor="phone-input">Mobile Number</label>
-              <input
-                id="phone-input"
-                type="tel"
-                placeholder="+1 555 019 2834"
-                className="input-field"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                disabled={loading}
-                required
-              />
-            </div>
-            <button
-              id="send-otp-btn"
-              type="submit"
-              className="btn btn-primary"
-              disabled={loading || !phone}
+      <div className="app-content" style={{ justifyContent: 'center', minHeight: '75vh' }}>
+        <div className="card glass" style={{ padding: '32px 24px', gap: '20px' }}>
+          <div style={{ textAlign: 'center' }}>
+            <div 
+              className="brand-icon" 
+              style={{ 
+                width: '52px', 
+                height: '52px', 
+                margin: '0 auto 16px auto', 
+                fontSize: '1.6rem', 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'center' 
+              }}
             >
-              {loading ? 'Sending Code...' : 'Send Verification OTP'}
-            </button>
-          </form>
-        ) : (
-          <form onSubmit={handleVerifyOtp} className="form-group" style={{ gap: '16px' }}>
-            <div className="form-group">
-              <label className="form-label" htmlFor="otp-input">Verification Code</label>
-              <input
-                id="otp-input"
-                type="text"
-                maxLength={6}
-                pattern="\d{6}"
-                placeholder="123456"
-                className="input-field"
-                style={{ textAlign: 'center', fontSize: '1.5rem', letterSpacing: '0.25em', fontWeight: 'bold' }}
-                value={otp}
-                onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
-                disabled={loading}
-                required
-                autoFocus
-              />
+              ⏳
             </div>
-            <div style={{ display: 'flex', gap: '12px' }}>
+            <h1 style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '6px', letterSpacing: '-0.02em' }}>
+              {step === 'phone' ? 'Phone Verification' : 'Enter One-Time Code'}
+            </h1>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', lineHeight: '1.4' }}>
+              {step === 'phone' 
+                ? 'Sign in to join a queue, track your live place in line, and receive wait notifications.' 
+                : `We sent a 6-digit confirmation code to ${phone}.`}
+            </p>
+          </div>
+
+          {isDemoMode && (
+            <div className="notification-banner notification-banner-warning" style={{ flexDirection: 'column', gap: '6px' }}>
+              <div>
+                <strong>Simulation Mode Active</strong> — Supabase is running with simulated data.
+              </div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                {step === 'phone' ? (
+                  <span>
+                    Tap below to fill a sample number, or enter any mobile number.
+                  </span>
+                ) : (
+                  <span>
+                    Use verification code <strong>123456</strong> to proceed.
+                  </span>
+                )}
+              </div>
+              {step === 'phone' && (
+                <button
+                  type="button"
+                  onClick={fillDemoCredentials}
+                  className="btn btn-secondary"
+                  style={{ minHeight: '32px', height: '32px', fontSize: '0.75rem', padding: '0 10px', width: 'fit-content', marginTop: '4px' }}
+                >
+                  ⚡ Auto-fill Demo Phone
+                </button>
+              )}
+            </div>
+          )}
+
+          {error && (
+            <div className="notification-banner notification-banner-error">
+              <span>{error}</span>
+            </div>
+          )}
+
+          {step === 'phone' ? (
+            <form onSubmit={handleSendOtp} className="form-group" style={{ gap: '16px' }}>
+              <div className="form-group">
+                <label className="form-label" htmlFor="phone-input">Mobile Number</label>
+                <input
+                  id="phone-input"
+                  type="tel"
+                  placeholder="+1 (555) 019-2834"
+                  className="input-field"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  disabled={loading}
+                  required
+                  autoFocus
+                />
+              </div>
               <button
-                id="back-btn"
-                type="button"
-                className="btn btn-secondary"
-                style={{ flex: 1 }}
-                onClick={() => setStep('phone')}
-                disabled={loading}
-              >
-                Back
-              </button>
-              <button
-                id="verify-otp-btn"
+                id="send-otp-btn"
                 type="submit"
                 className="btn btn-primary"
-                style={{ flex: 2 }}
-                disabled={loading || otp.length !== 6}
+                disabled={loading || !phone.trim()}
               >
-                {loading ? 'Verifying...' : 'Verify & Login'}
+                {loading ? 'Sending Code...' : 'Send Verification OTP'}
               </button>
-            </div>
-          </form>
-        )}
+            </form>
+          ) : (
+            <form onSubmit={handleVerifyOtp} className="form-group" style={{ gap: '16px' }}>
+              <div className="form-group">
+                <label className="form-label" htmlFor="otp-input">6-Digit Code</label>
+                <input
+                  ref={otpInputRef}
+                  id="otp-input"
+                  type="text"
+                  maxLength={6}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="123456"
+                  className="input-field"
+                  style={{ textAlign: 'center', fontSize: '1.6rem', letterSpacing: '0.25em', fontWeight: 700 }}
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+                  disabled={loading}
+                  required
+                />
+              </div>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button
+                  id="back-btn"
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ flex: 1 }}
+                  onClick={() => {
+                    setStep('phone');
+                    setError('');
+                  }}
+                  disabled={loading}
+                >
+                  Back
+                </button>
+                <button
+                  id="verify-otp-btn"
+                  type="submit"
+                  className="btn btn-primary"
+                  style={{ flex: 2 }}
+                  disabled={loading || otp.length !== 6}
+                >
+                  {loading ? 'Verifying...' : 'Verify & Sign In'}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   );
 }

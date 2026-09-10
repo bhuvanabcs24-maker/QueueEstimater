@@ -113,11 +113,13 @@ BEGIN
     v_loc_id := NEW.location_id;
   END IF;
 
-  -- Get location service time
+  -- Get location service time (default to 10 minutes if not specified)
   SELECT COALESCE(avg_service_time_minutes, 10) INTO v_avg_service_time 
   FROM public.locations WHERE id = v_loc_id;
 
-  -- Count active check-ins (latest event for user is 'check_in')
+  -- Count active check-ins:
+  -- Subquery identifies the most recent event for each user at this location.
+  -- Only users whose latest event is 'check_in' are currently waiting in line.
   WITH latest_user_events AS (
     SELECT DISTINCT ON (user_id)
       event_type
@@ -129,10 +131,10 @@ BEGIN
   FROM latest_user_events 
   WHERE event_type = 'check_in';
 
-  -- Calculate average wait time (active check-ins * service time)
+  -- Formula: Estimated Wait = Active Queue Length × Average Service Time
   v_wait_minutes := v_active_count * v_avg_service_time;
 
-  -- Insert or update location_estimates
+  -- Upsert into location_estimates table
   INSERT INTO public.location_estimates (location_id, current_queue_length, avg_wait_minutes, last_updated)
   VALUES (v_loc_id, v_active_count, v_wait_minutes, NOW())
   ON CONFLICT (location_id) DO UPDATE
@@ -149,10 +151,63 @@ CREATE OR REPLACE TRIGGER queue_events_trigger
   FOR EACH ROW EXECUTE FUNCTION public.update_location_estimate();
 
 
--- 6. Insert Mock Data for Testing
-INSERT INTO public.locations (name, address, category, lat, lng, geofence_radius_m, avg_service_time_minutes)
+-- 6. Performance Indexes for Fast Queue Calculations
+CREATE INDEX IF NOT EXISTS idx_queue_events_loc_user_created 
+  ON public.queue_events (location_id, user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_queue_events_user_created 
+  ON public.queue_events (user_id, created_at DESC);
+
+
+-- 7. Helper Function: Calculate Exact Live Queue Position for a User
+CREATE OR REPLACE FUNCTION public.get_user_queue_position(p_location_id UUID, p_user_id UUID)
+RETURNS INT AS $$
+DECLARE
+  v_user_checkin_time TIMESTAMPTZ;
+  v_position INT;
+BEGIN
+  -- Fetch user's latest check_in timestamp at this location
+  SELECT created_at INTO v_user_checkin_time
+  FROM public.queue_events
+  WHERE location_id = p_location_id 
+    AND user_id = p_user_id 
+    AND event_type = 'check_in'
+  ORDER BY created_at DESC
+  LIMIT 1;
+
+  IF v_user_checkin_time IS NULL THEN
+    RETURN 0;
+  END IF;
+
+  -- Count how many currently active users checked in prior to this user
+  WITH latest_events AS (
+    SELECT DISTINCT ON (user_id)
+      user_id,
+      event_type,
+      created_at
+    FROM public.queue_events
+    WHERE location_id = p_location_id
+    ORDER BY user_id, created_at DESC
+  )
+  SELECT COUNT(*) + 1 INTO v_position
+  FROM latest_events
+  WHERE event_type = 'check_in'
+    AND created_at < v_user_checkin_time;
+
+  RETURN COALESCE(v_position, 1);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+-- 8. Seed Locations with Initial Estimates for Testing
+INSERT INTO public.locations (id, name, address, category, lat, lng, geofence_radius_m, avg_service_time_minutes)
 VALUES 
-  ('General Medicine Clinic A', '100 Medical Plaza, Suite 4', 'Clinic', 37.7749, -122.4194, 200, 12),
-  ('Express Lab Services', '100 Medical Plaza, Suite 12', 'Laboratory', 37.7752, -122.4189, 100, 8),
-  ('Pediatric Outpatient Clinic', '102 Medical Plaza, Floor 2', 'Pediatrics', 37.7745, -122.4201, 150, 15)
-ON CONFLICT DO NOTHING;
+  ('a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d', 'General Medicine Clinic A', '100 Medical Plaza, Suite 4', 'Clinic', 37.7749, -122.4194, 200, 12),
+  ('b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e', 'Express Lab Services', '100 Medical Plaza, Suite 12', 'Laboratory', 37.7752, -122.4189, 100, 8),
+  ('c3d4e5f6-a7b8-9c0d-1e2f-3a4b5c6d7e8f', 'Pediatric Outpatient Clinic', '102 Medical Plaza, Floor 2', 'Pediatrics', 37.7745, -122.4201, 150, 15)
+ON CONFLICT (id) DO NOTHING;
+
+-- Initialize location estimate records for seeded locations
+INSERT INTO public.location_estimates (location_id, current_queue_length, avg_wait_minutes, last_updated)
+SELECT id, 0, 0, NOW() FROM public.locations
+ON CONFLICT (location_id) DO NOTHING;
