@@ -2,8 +2,13 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { supabase } from '../lib/supabase';
-import { calculateDistance } from '../lib/geofence';
+import { supabase } from '@/lib/supabase';
+import { calculateDistance } from '@/lib/geofence';
+import { getVenuesNearGps, Venue } from '@/lib/venueStore';
+import dynamic from 'next/dynamic';
+import HeaderNav from '@/components/HeaderNav';
+
+const VenueMap = dynamic(() => import('@/components/VenueMap'), { ssr: false });
 
 interface LocationEstimate {
   current_queue_length: number;
@@ -17,25 +22,9 @@ interface Location {
   category: string;
   lat: number;
   lng: number;
-  distance?: number; // Calculated dynamic distance in meters
+  distance?: number;
   estimate?: LocationEstimate;
 }
-
-interface ActiveCheckInInfo {
-  id: string;
-  location_id?: string;
-  location_name?: string;
-  locations?: {
-    name: string;
-  };
-  event_type: string;
-}
-
-const MOCK_LOCATIONS: Location[] = [
-  { id: 'mock-clinic-a', name: 'General Medicine Clinic A', address: '100 Medical Plaza, Suite 4', category: 'Clinic', lat: 37.7749, lng: -122.4194, estimate: { current_queue_length: 2, avg_wait_minutes: 24 } },
-  { id: 'mock-lab-b', name: 'Express Lab Services', address: '100 Medical Plaza, Suite 12', category: 'Laboratory', lat: 37.7752, lng: -122.4189, estimate: { current_queue_length: 0, avg_wait_minutes: 0 } },
-  { id: 'mock-peds-c', name: 'Pediatric Outpatient Clinic', address: '102 Medical Plaza, Floor 2', category: 'Pediatrics', lat: 37.7745, lng: -122.4201, estimate: { current_queue_length: 5, avg_wait_minutes: 75 } }
-];
 
 export default function LandingPage() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -43,37 +32,22 @@ export default function LandingPage() {
   const [loading, setLoading] = useState(true);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [gpsLoading, setGpsLoading] = useState(false);
-  const [activeCheckIn, setActiveCheckIn] = useState<ActiveCheckInInfo | null>(null);
-  const [userPhone, setUserPhone] = useState<string | null>(null);
-  const [notification, setNotification] = useState<{ type: 'warning' | 'error' | 'info'; message: string } | null>(null);
-  const [isDemoMode, setIsDemoMode] = useState(false);
+  const [activeCheckIn, setActiveCheckIn] = useState<{ id: string; location_name?: string; locations?: { name?: string } } | null>(null);
 
   useEffect(() => {
-    // Check if running in demo simulation mode
-    const isPlaceholder = 
-      process.env.NEXT_PUBLIC_SUPABASE_URL?.includes('placeholder') || 
-      !process.env.NEXT_PUBLIC_SUPABASE_URL;
-    setIsDemoMode(isPlaceholder);
-
-    // Determine if user is logged in
+    // Check if there is an active checkin
     const checkUserSession = async () => {
-      const demoPhone = localStorage.getItem('demo_authenticated_phone');
-      if (demoPhone) {
-        setUserPhone(demoPhone);
-        const demoCheckIn = localStorage.getItem('demo_active_check_in');
-        if (demoCheckIn) {
-          try {
-            setActiveCheckIn(JSON.parse(demoCheckIn));
-          } catch {
-            localStorage.removeItem('demo_active_check_in');
-          }
+      const demoCheckIn = localStorage.getItem('demo_active_check_in');
+      if (demoCheckIn) {
+        try {
+          setActiveCheckIn(JSON.parse(demoCheckIn));
+        } catch {
+          localStorage.removeItem('demo_active_check_in');
         }
       } else {
         try {
           const { data: { session } } = await supabase.auth.getSession();
           if (session?.user) {
-            setUserPhone(session.user.phone || session.user.email || 'Verified User');
-            // Query active checkin for this user
             const { data } = await supabase
               .from('queue_events')
               .select('id, location_id, event_type, created_at, locations(name)')
@@ -82,82 +56,58 @@ export default function LandingPage() {
               .limit(1);
 
             if (data && data.length > 0 && data[0].event_type === 'check_in') {
-              setActiveCheckIn(data[0] as unknown as ActiveCheckInInfo);
+              const rawLoc = data[0].locations as unknown as { name?: string } | { name?: string }[];
+              const locName = Array.isArray(rawLoc) ? rawLoc[0]?.name : rawLoc?.name;
+              setActiveCheckIn({
+                id: data[0].id,
+                location_name: locName || 'Clinic Queue'
+              });
             }
           }
         } catch {
-          // Silent fallback if session lookup fails
+          // Ignore error
         }
       }
     };
 
     checkUserSession();
     fetchLocations();
+    requestGPS();
   }, []);
 
-  const fetchLocations = async () => {
+  useEffect(() => {
+    if (userLocation) {
+      fetchLocations(userLocation.lat, userLocation.lng);
+    }
+  }, [userLocation]);
+
+  const fetchLocations = (lat?: number, lng?: number) => {
     setLoading(true);
     try {
-      const isPlaceholder = 
-        process.env.NEXT_PUBLIC_SUPABASE_URL?.includes('placeholder') || 
-        !process.env.NEXT_PUBLIC_SUPABASE_URL;
-      
-      if (isPlaceholder) {
-        setLocations(MOCK_LOCATIONS);
-        setLoading(false);
-        return;
-      }
-
-      // Fetch locations from database
-      const { data: locData, error: locError } = await supabase
-        .from('locations')
-        .select('*');
-
-      if (locError) throw locError;
-
-      // Fetch corresponding estimates
-      const { data: estData } = await supabase
-        .from('location_estimates')
-        .select('*');
-
-      const mappedLocations: Location[] = (locData || []).map((loc) => {
-        const est = estData?.find((e) => e.location_id === loc.id);
-        return {
-          id: loc.id,
-          name: loc.name,
-          address: loc.address || '',
-          category: loc.category || '',
-          lat: loc.lat,
-          lng: loc.lng,
-          estimate: est ? {
-            current_queue_length: est.current_queue_length || 0,
-            avg_wait_minutes: Number(est.avg_wait_minutes) || 0
-          } : {
-            current_queue_length: 0,
-            avg_wait_minutes: 0
-          }
-        };
-      });
-
-      setLocations(mappedLocations.length > 0 ? mappedLocations : MOCK_LOCATIONS);
+      const nearVenues: Venue[] = getVenuesNearGps(lat, lng);
+      const mapped: Location[] = nearVenues.map((v) => ({
+        id: v.id,
+        name: v.name,
+        address: v.address,
+        category: v.category,
+        lat: v.lat,
+        lng: v.lng,
+        distance: v.distance_meters,
+        estimate: {
+          current_queue_length: v.current_queue_length ?? 2,
+          avg_wait_minutes: Math.round((v.current_queue_length ?? 2) * v.avg_service_time_minutes),
+        },
+      }));
+      setLocations(mapped);
     } catch {
-      // Fallback to sample directory gracefully
-      setLocations(MOCK_LOCATIONS);
+      // Fallback
     } finally {
       setLoading(false);
     }
   };
 
-  // Ask for GPS coordinates to calculate proximity
   const requestGPS = () => {
-    setNotification(null);
-    if (!navigator.geolocation) {
-      setNotification({
-        type: 'warning',
-        message: 'Geolocation is not supported by your current browser.'
-      });
-      return;
-    }
+    if (!navigator.geolocation) return;
 
     setGpsLoading(true);
     navigator.geolocation.getCurrentPosition(
@@ -166,18 +116,14 @@ export default function LandingPage() {
         setUserLocation({ lat: latitude, lng: longitude });
         setGpsLoading(false);
       },
-      (geoError) => {
+      (error) => {
+        console.warn('GPS location unavailable:', error.message || error);
         setGpsLoading(false);
-        const msg = geoError.code === geoError.PERMISSION_DENIED
-          ? 'Location access was denied. Showing all locations by default.'
-          : 'Could not acquire GPS position. Showing all locations by default.';
-        setNotification({ type: 'info', message: msg });
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
   };
 
-  // Recalculate distances and sort when GPS coordinates are retrieved
   const getProcessedLocations = () => {
     let list = [...locations];
 
@@ -186,7 +132,6 @@ export default function LandingPage() {
         const distM = calculateDistance(userLocation.lat, userLocation.lng, loc.lat, loc.lng);
         return { ...loc, distance: distM };
       });
-      // Sort by proximity
       list.sort((a, b) => (a.distance || 0) - (b.distance || 0));
     }
 
@@ -201,17 +146,6 @@ export default function LandingPage() {
     }
 
     return list;
-  };
-
-  const handleLogout = async () => {
-    localStorage.removeItem('demo_authenticated_phone');
-    localStorage.removeItem('demo_active_check_in');
-    try {
-      await supabase.auth.signOut();
-    } catch {
-      // Ignore errors on signout
-    }
-    window.location.reload();
   };
 
   const getWaitBadge = (minutes: number) => {
@@ -229,69 +163,13 @@ export default function LandingPage() {
       <header className="app-header glass">
         <div className="brand">
           <div className="brand-icon">⏳</div>
-          <span>QWait</span>
+          <span>QWait Estimator</span>
         </div>
-        {userPhone ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{userPhone}</span>
-            <button 
-              onClick={handleLogout} 
-              style={{ 
-                background: 'none', 
-                border: 'none', 
-                color: 'var(--danger)', 
-                fontSize: '0.8rem', 
-                cursor: 'pointer', 
-                textDecoration: 'underline',
-                minHeight: 'auto',
-                padding: '4px'
-              }}
-            >
-              Log out
-            </button>
-          </div>
-        ) : (
-          <Link 
-            href="/login" 
-            className="badge" 
-            style={{ 
-              background: 'var(--accent)', 
-              color: '#0d0f12', 
-              fontWeight: 'bold', 
-              textDecoration: 'none',
-              padding: '6px 14px' 
-            }}
-          >
-            Log In
-          </Link>
-        )}
+        <HeaderNav />
       </header>
 
       {/* Main Content */}
       <div className="app-content">
-        {/* Notification Banner */}
-        {notification && (
-          <div className={`notification-banner notification-banner-${notification.type}`}>
-            <span style={{ flex: 1 }}>{notification.message}</span>
-            <button 
-              onClick={() => setNotification(null)}
-              style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', minHeight: 'auto', padding: '0 4px', fontWeight: 'bold' }}
-              aria-label="Close notification"
-            >
-              ✕
-            </button>
-          </div>
-        )}
-
-        {/* Demo Mode Notice */}
-        {isDemoMode && (
-          <div className="notification-banner notification-banner-warning">
-            <span>
-              ℹ️ <strong>Academic Demo Mode:</strong> Running with local simulated data. Enter any phone with OTP <strong>123456</strong> to test full queue flows.
-            </span>
-          </div>
-        )}
-
         {/* Active Queue Tracker Header Card */}
         {activeCheckIn && (
           <Link 
@@ -310,7 +188,7 @@ export default function LandingPage() {
                   {activeCheckIn.locations?.name || activeCheckIn.location_name || 'Clinic Queue'}
                 </h3>
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                  Tap to open live tracker countdown & position
+                  Tap to open live tracker countdown
                 </p>
               </div>
               <div style={{ marginLeft: 'auto', fontSize: '1.5rem' }}>➡️</div>
@@ -319,12 +197,12 @@ export default function LandingPage() {
         )}
 
         {/* Hero search area */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
-          <h1 style={{ fontSize: '1.4rem', fontWeight: 800, letterSpacing: '-0.02em', lineHeight: 1.25 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+          <h2 style={{ fontSize: '1.35rem', fontWeight: 800, letterSpacing: '-0.02em' }}>
             Know your wait before you stand in line
-          </h1>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', lineHeight: '1.4' }}>
-            Find a facility or scan a QR code at the entrance to join the digital queue.
+          </h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: '1.4' }}>
+            Find a clinic or scan a QR code at the site to check in.
           </p>
         </div>
 
@@ -339,25 +217,48 @@ export default function LandingPage() {
             onChange={(e) => setSearchQuery(e.target.value)}
           />
 
-          {!userLocation && (
-            <button 
-              id="gps-permission-btn"
-              onClick={requestGPS} 
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <Link 
+              href="/venue/register" 
               className="btn btn-secondary" 
-              style={{ padding: '10px 16px', fontSize: '0.85rem' }}
-              disabled={gpsLoading}
+              style={{ flex: 1, padding: '10px 14px', fontSize: '0.85rem', textDecoration: 'none' }}
             >
-              {gpsLoading ? 'Detecting GPS...' : '📍 Show Nearest (Request GPS)'}
-            </button>
-          )}
+              ➕ Register New Venue
+            </Link>
+            {!userLocation && (
+              <button 
+                id="gps-permission-btn"
+                onClick={requestGPS} 
+                className="btn btn-secondary" 
+                style={{ flex: 1, padding: '10px 14px', fontSize: '0.85rem' }}
+                disabled={gpsLoading}
+              >
+                {gpsLoading ? 'Detecting GPS...' : '📍 Show Nearest (GPS)'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Interactive Map View */}
+        <div style={{ marginTop: '4px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <h3 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              📍 Interactive Venue Map
+            </h3>
+          </div>
+          <VenueMap 
+            venues={getVenuesNearGps(userLocation?.lat, userLocation?.lng)} 
+            userLat={userLocation?.lat} 
+            userLng={userLocation?.lng} 
+          />
         </div>
 
         {/* Locations List */}
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <h2 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              {userLocation ? 'Sorted by Proximity' : 'Available Facilities'}
-            </h2>
+            <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              {userLocation ? 'Sorted by Proximity' : 'Available Locations'}
+            </h3>
             {userLocation && (
               <span style={{ fontSize: '0.75rem', color: 'var(--accent)' }}>GPS Enabled</span>
             )}
@@ -365,7 +266,6 @@ export default function LandingPage() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             {loading ? (
-              // Skeletal loaders
               [1, 2, 3].map((n) => (
                 <div key={n} className="card glass" style={{ height: '110px' }}>
                   <div className="skeleton" style={{ width: '60%', height: '18px', marginBottom: '8px' }} />
@@ -374,15 +274,8 @@ export default function LandingPage() {
                 </div>
               ))
             ) : filteredLocations.length === 0 ? (
-              <div className="card glass" style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--text-secondary)' }}>
-                <p style={{ marginBottom: '12px' }}>No facilities match "{searchQuery}"</p>
-                <button 
-                  onClick={() => setSearchQuery('')}
-                  className="btn btn-secondary"
-                  style={{ width: 'auto', margin: '0 auto', fontSize: '0.85rem', padding: '8px 16px' }}
-                >
-                  Clear Search Filter
-                </button>
+              <div style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--text-secondary)' }}>
+                No locations match &quot;{searchQuery}&quot;
               </div>
             ) : (
               filteredLocations.map((loc) => (
@@ -394,7 +287,7 @@ export default function LandingPage() {
                 >
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '12px' }}>
-                      <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: '#fff' }}>{loc.name}</h3>
+                      <h4 style={{ fontSize: '1.05rem', fontWeight: 700, color: '#fff' }}>{loc.name}</h4>
                       <span className="badge" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}>
                         {loc.category}
                       </span>

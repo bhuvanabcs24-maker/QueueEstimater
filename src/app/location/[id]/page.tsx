@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '../../../lib/supabase';
 import { calculateDistance } from '../../../lib/geofence';
+import { getVenueById } from '@/lib/venueStore';
 
 interface Location {
   id: string;
@@ -126,19 +127,18 @@ export default function LocationDetailPage() {
         process.env.NEXT_PUBLIC_SUPABASE_URL?.includes('placeholder') || 
         !process.env.NEXT_PUBLIC_SUPABASE_URL;
       
-      if (isPlaceholder || locationId.startsWith('mock-')) {
-        const mockLoc = MOCK_LOCATIONS.find((l) => l.id === locationId) || MOCK_LOCATIONS[0];
-        setLocation(mockLoc);
+      if (isPlaceholder || locationId.startsWith('mock-') || locationId.startsWith('venue_')) {
+        const venue = getVenueById(locationId, userCoords?.lat, userCoords?.lng);
+        setLocation(venue);
         
-        // Mock estimate from defaults
-        const currentQueue = mockLoc.id === 'mock-clinic-a' ? 2 : mockLoc.id === 'mock-peds-c' ? 5 : 0;
+        const currentQueue = venue.current_queue_length ?? 2;
         setEstimate({
           current_queue_length: currentQueue,
-          avg_wait_minutes: currentQueue * mockLoc.avg_service_time_minutes
+          avg_wait_minutes: Math.round(currentQueue * venue.avg_service_time_minutes)
         });
         
         setLoading(false);
-        triggerGpsCheck(mockLoc);
+        triggerGpsCheck(venue);
         return;
       }
 
@@ -150,18 +150,15 @@ export default function LocationDetailPage() {
         .single();
 
       if (locError) {
-        const mockLoc = MOCK_LOCATIONS.find((l) => l.id === locationId);
-        if (mockLoc) {
-          setLocation(mockLoc);
-          setEstimate({
-            current_queue_length: 2,
-            avg_wait_minutes: 2 * mockLoc.avg_service_time_minutes
-          });
-          triggerGpsCheck(mockLoc);
-          setLoading(false);
-          return;
-        }
-        throw locError;
+        const venue = getVenueById(locationId, userCoords?.lat, userCoords?.lng);
+        setLocation(venue);
+        setEstimate({
+          current_queue_length: venue.current_queue_length ?? 2,
+          avg_wait_minutes: Math.round((venue.current_queue_length ?? 2) * venue.avg_service_time_minutes)
+        });
+        triggerGpsCheck(venue);
+        setLoading(false);
+        return;
       }
 
       setLocation(locData);
@@ -196,7 +193,7 @@ export default function LocationDetailPage() {
     } finally {
       setLoading(false);
     }
-  }, [locationId, triggerGpsCheck]);
+  }, [locationId, triggerGpsCheck, userCoords?.lat, userCoords?.lng]);
 
   useEffect(() => {
     const isPlaceholder = 
@@ -498,6 +495,14 @@ export default function LocationDetailPage() {
 
           <Link href="/" className="btn btn-secondary" style={{ textDecoration: 'none' }}>
             Back to Directory
+          </Link>
+
+          <Link 
+            href={`/location/${locationId}/qr`} 
+            className="btn btn-secondary" 
+            style={{ textDecoration: 'none', border: '1px solid rgba(255, 255, 255, 0.15)' }}
+          >
+            🖨️ Printable QR Poster
           </Link>
         </div>
       </div>

@@ -10,6 +10,8 @@ const activeAnonKey = supabaseAnonKey || 'placeholder-anon-key';
 
 export const supabase = createClient(activeUrl, activeAnonKey);
 
+export const isSupabaseConfigured = Boolean(supabaseUrl && !supabaseUrl.includes('placeholder'));
+
 export const getSupabaseAdmin = () => {
   if (!supabaseUrl || !supabaseServiceKey) {
     console.warn('Supabase Admin requested but credentials (URL/service role key) are missing.');

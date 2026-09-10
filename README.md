@@ -27,9 +27,13 @@ Patients and customers lose countless hours physically standing in crowded, opaq
 ## 2. Key Features
 
 - 📍 **GPS-Based Facility Discovery:** Automatically sorts facilities by proximity to device coordinates using browser Geolocation.
+- 🗺️ **Interactive Venue Map:** Real-time OpenStreetMap/Leaflet visualization displaying clinic pins, live wait indicators, and direct navigation links.
 - ⏱️ **Real-Time Wait Estimation:** Computes dynamic wait times based on active queue entries and location-specific average service rates.
 - 📷 **QR Code Scanner:** Hardware-accelerated camera scanner (`jsQR`) reads location codes directly at entrances.
+- 🖨️ **Printable Entrance QR Posters:** Instant generation of print-ready QR check-in posters (`/location/:id/qr`) for physical clinics.
 - 🛡️ **Geofence Verification:** Enforces that users are physically within a facility's permitted radius (e.g. 150m) to prevent remote queue jumping.
+- 🩺 **Doctor & Staff Portal:** Passcode-gated portal (`/doctor`, PIN: `7788`) and live queue manager (`/admin/:locationId`) allowing doctors to call patients and complete visits.
+- ➕ **Venue Registration:** Self-service onboarding (`/venue/register`) for facilities to register new service counters and customize geofence radii.
 - 🔒 **Secure Phone Authentication:** Supabase Auth OTP verification with server-side token validation on all mutations.
 - 🛑 **Queue Cancellation & Checkout:** Self-service controls to release or complete spots in line.
 - ⚡ **Event-Driven Database Triggers:** PostgreSQL trigger on `queue_events` automatically recomputes aggregate wait times instantaneously upon any event.
