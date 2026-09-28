@@ -153,7 +153,7 @@ export function registerNewVenue(venue: Omit<Venue, 'id'> & { id?: string }): Ve
   };
 
   if (typeof window !== 'undefined') {
-    const existing = getAllVenues().filter((v) => v.is_custom && !MOCK_IDS.has(v.id));
+    const existing = getAllVenues().filter((v) => v.is_custom && !MOCK_IDS.has(v.id) && v.id !== fullVenue.id);
     existing.push(fullVenue);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
   }

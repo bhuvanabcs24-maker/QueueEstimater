@@ -35,6 +35,37 @@ export interface RealtimeEvent {
   timestamp: string;
 }
 
+import fs from 'fs';
+import path from 'path';
+
+const DATA_FILE = path.join(process.cwd(), 'data', 'venues.json');
+
+function saveStoreToFile(store: Record<string, VenueRealtimeState>) {
+  try {
+    const dir = path.dirname(DATA_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('Could not persist venues to file:', err);
+  }
+}
+
+function loadStoreFromFile(): Record<string, VenueRealtimeState> {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+      if (raw) {
+        return JSON.parse(raw);
+      }
+    }
+  } catch (err) {
+    console.warn('Could not read venues from file:', err);
+  }
+  return {};
+}
+
 // Global in-memory singleton for Next.js Node environment
 declare global {
   // eslint-disable-next-line no-var
@@ -48,7 +79,7 @@ declare global {
 // Real-time venue store starts clean - only real database or registered venues appear
 function getStore(): Record<string, VenueRealtimeState> {
   if (!global.__realtimeQueueState) {
-    global.__realtimeQueueState = {};
+    global.__realtimeQueueState = loadStoreFromFile();
     global.__nextTicketNumber = 100;
   }
   return global.__realtimeQueueState!;
@@ -322,6 +353,7 @@ export function upsertVenueRegistration(venue: {
 
   store[venue.id] = state;
   recalculatePositions(state);
+  saveStoreToFile(store);
 
   broadcastRealtimeEvent({
     type: 'VENUE_UPDATE',

@@ -1,13 +1,16 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { MapPin, Navigation, ArrowLeft, Building2, Search, CheckCircle2, AlertCircle } from 'lucide-react';
 import { registerNewVenue } from '@/lib/venueStore';
 
-export default function RegisterVenuePage() {
+function RegisterVenueInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const prefilledId = searchParams.get('id') || searchParams.get('code') || '';
+
   const [name, setName] = useState('');
   const [category, setCategory] = useState('Healthcare');
   const [address, setAddress] = useState('');
@@ -19,7 +22,17 @@ export default function RegisterVenuePage() {
   const [geocoding, setGeocoding] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-  const [infoMsg, setInfoMsg] = useState('Standard facility coordinates loaded. You can click "Detect My Location" or search an address.');
+  const [infoMsg, setInfoMsg] = useState(
+    prefilledId
+      ? `Activating facility code: ${prefilledId}. Enter name and address below.`
+      : 'Standard facility coordinates loaded. You can click "Detect My Location" or search an address.'
+  );
+
+  useEffect(() => {
+    if (prefilledId) {
+      setInfoMsg(`Activating facility code: ${prefilledId}. Enter details to launch check-ins.`);
+    }
+  }, [prefilledId]);
 
   const geocodeAddress = async (queryAddress: string) => {
     if (!queryAddress.trim()) return false;
@@ -88,7 +101,7 @@ export default function RegisterVenuePage() {
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const finalLat = lat !== '' ? Number(lat) : 14.5492;
     const finalLng = lng !== '' ? Number(lng) : 75.1481;
@@ -103,6 +116,7 @@ export default function RegisterVenuePage() {
 
     try {
       const newVenue = registerNewVenue({
+        id: prefilledId.trim() || undefined,
         name: name.trim(),
         category,
         address: address.trim(),
@@ -112,7 +126,14 @@ export default function RegisterVenuePage() {
         avg_service_time_minutes: Number(avgServiceMins),
       });
 
-      router.push(`/location/${newVenue.id}/qr`);
+      // Synchronously post to server database before routing
+      await fetch('/api/venues', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newVenue),
+      }).catch(() => {});
+
+      router.push(`/location/${encodeURIComponent(newVenue.id)}/qr`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Registration failed';
       setErrorMsg(msg);
@@ -133,10 +154,12 @@ export default function RegisterVenuePage() {
 
       <div style={{ marginBottom: '1.5rem' }}>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
-          Register Service Counter / Clinic
+          {prefilledId ? 'Activate Scanned Counter' : 'Register Service Counter / Clinic'}
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-          Create a new triage queue counter, configure geofencing constraints, and generate a printable QR poster.
+          {prefilledId
+            ? `Set up details for location code "${prefilledId}" so patient check-ins activate immediately.`
+            : 'Create a new triage queue counter, configure geofencing constraints, and generate a printable QR poster.'}
         </p>
       </div>
 
@@ -183,11 +206,12 @@ export default function RegisterVenuePage() {
           <label className="form-label">Facility / Counter Name *</label>
           <input
             type="text"
-            placeholder="e.g. City Care Center - Room 102"
+            placeholder="e.g. Sarvodaya Clinic - Room 1"
             value={name}
             onChange={(e) => setName(e.target.value)}
             className="input-field"
             required
+            autoFocus
           />
         </div>
 
@@ -212,7 +236,7 @@ export default function RegisterVenuePage() {
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <input
               type="text"
-              placeholder="e.g. 100 Hospital Way, Medical District"
+              placeholder="e.g. 6th Cross, NR Colony"
               value={address}
               onChange={(e) => setAddress(e.target.value)}
               onBlur={() => address && geocodeAddress(address)}
@@ -326,5 +350,19 @@ export default function RegisterVenuePage() {
         </button>
       </form>
     </div>
+  );
+}
+
+export default function RegisterVenuePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="page-container" style={{ alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+          <div>Loading registration form...</div>
+        </div>
+      }
+    >
+      <RegisterVenueInner />
+    </Suspense>
   );
 }
