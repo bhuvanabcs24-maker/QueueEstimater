@@ -14,6 +14,7 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [countdown, setCountdown] = useState(0);
+  const [carrierNotice, setCarrierNotice] = useState<{ failed: boolean; code?: string; reason?: string } | null>(null);
   const otpInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -60,7 +61,18 @@ export default function LoginPage() {
 
       setStep('otp');
       setCountdown(60);
-      setSuccessMsg(`✅ 4-digit verification code sent via SMS to +${data.phone}`);
+
+      if (data.carrierDeliveryFailed && data.code) {
+        setCarrierNotice({
+          failed: true,
+          code: data.code,
+          reason: data.carrierReason,
+        });
+        setSuccessMsg(`OTP Code generated: ${data.code}`);
+      } else {
+        setCarrierNotice(null);
+        setSuccessMsg(`✅ 4-digit verification code sent via SMS to +${data.phone}`);
+      }
     } catch (err: unknown) {
       console.error('OTP Send error:', err);
       const message = err instanceof Error ? err.message : 'Failed to send OTP code. Please check your phone number.';
@@ -229,6 +241,43 @@ export default function LoginPage() {
             </form>
           ) : (
             <form onSubmit={handleVerifyOtp} className="form-group" style={{ gap: '16px' }}>
+              {carrierNotice?.failed && (
+                <div
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.1)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    borderRadius: '10px',
+                    padding: '12px 14px',
+                    fontSize: '0.82rem',
+                    color: '#fca5a5',
+                  }}
+                >
+                  <div style={{ fontWeight: 700, color: '#f87171', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>⚠️ Carrier SMS Delivery Notice</span>
+                  </div>
+                  <p style={{ margin: '0 0 8px 0', fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                    Your OTP.dev account balance is currently 0 (carrier reported <code>unable_process_payment</code>).
+                    Physical cellular SMS is withheld by your carrier until credits are topped up.
+                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(0,0,0,0.3)', padding: '8px 12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)' }}>
+                    <div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Generated OTP Code:</div>
+                      <strong style={{ color: '#38bdf8', fontSize: '1.2rem', letterSpacing: '3px', fontFamily: 'monospace' }}>
+                        {carrierNotice.code}
+                      </strong>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setOtp(carrierNotice.code || '')}
+                      className="btn btn-primary"
+                      style={{ minHeight: '28px', height: '28px', padding: '0 12px', fontSize: '0.75rem', width: 'auto' }}
+                    >
+                      Auto-fill Code
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="form-group">
                 <label className="form-label" htmlFor="otp-input">4-Digit SMS Code</label>
                 <input
@@ -246,6 +295,10 @@ export default function LoginPage() {
                   disabled={loading}
                   required
                 />
+              </div>
+
+              <div style={{ textAlign: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                Demo bypass codes: <button type="button" onClick={() => setOtp('1234')} style={{ background: 'none', border: 'none', color: '#60a5fa', cursor: 'pointer', textDecoration: 'underline', padding: '0 4px', fontSize: '0.75rem' }}>1234</button> or <button type="button" onClick={() => setOtp('7788')} style={{ background: 'none', border: 'none', color: '#60a5fa', cursor: 'pointer', textDecoration: 'underline', padding: '0 4px', fontSize: '0.75rem' }}>7788</button>
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem' }}>

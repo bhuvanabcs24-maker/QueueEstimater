@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { verifyPendingOtp } from '@/lib/otpStore';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,34 +32,41 @@ export async function POST(request: Request) {
 
     let isVerified = false;
 
-    // 1. Check with OTP.dev verification endpoint
-    try {
-      const verifyUrl = `https://api.otp.dev/v1/verifications?code=${encodeURIComponent(cleanCode)}&phone=${encodeURIComponent(formattedPhone)}`;
-      const otpRes = await fetch(verifyUrl, {
-        method: 'GET',
-        headers: {
-          'X-OTP-Key': apiKey,
-          'accept': 'application/json',
-        },
-      });
-
-      const resData = await otpRes.json();
-
-      if (otpRes.ok && Array.isArray(resData.data) && resData.data.length > 0) {
-        isVerified = true;
-      }
-    } catch (apiErr) {
-      console.warn('OTP.dev verify lookup error:', apiErr);
+    // 1. Check with internal OTP cache (populated during send-otp)
+    if (verifyPendingOtp(formattedPhone, cleanCode)) {
+      isVerified = true;
     }
 
-    // 2. Allow backup test codes for offline viva evaluation (1234 or 7788)
+    // 2. Check with OTP.dev verification endpoint
+    if (!isVerified) {
+      try {
+        const verifyUrl = `https://api.otp.dev/v1/verifications?code=${encodeURIComponent(cleanCode)}&phone=${encodeURIComponent(formattedPhone)}`;
+        const otpRes = await fetch(verifyUrl, {
+          method: 'GET',
+          headers: {
+            'X-OTP-Key': apiKey,
+            'accept': 'application/json',
+          },
+        });
+
+        const resData = await otpRes.json();
+
+        if (otpRes.ok && Array.isArray(resData.data) && resData.data.length > 0) {
+          isVerified = true;
+        }
+      } catch (apiErr) {
+        console.warn('OTP.dev verify lookup error:', apiErr);
+      }
+    }
+
+    // 3. Allow emergency backup codes for testing/offline presentation (1234 or 7788)
     if (!isVerified && (cleanCode === '1234' || cleanCode === '7788')) {
       isVerified = true;
     }
 
     if (!isVerified) {
       return NextResponse.json(
-        { error: 'Invalid verification code. Please check the 4-digit code sent via SMS.' },
+        { error: 'Invalid verification code. Please check the 4-digit code.' },
         { status: 400 }
       );
     }

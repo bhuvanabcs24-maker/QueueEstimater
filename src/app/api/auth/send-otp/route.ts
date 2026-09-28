@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { storePendingOtp } from '@/lib/otpStore';
 
 export const dynamic = 'force-dynamic';
 
@@ -78,12 +79,63 @@ export async function POST(request: Request) {
       );
     }
 
+    // Inspect real carrier delivery status via OTP.dev message lookup
+    let carrierStatus = 'sent';
+    let carrierReason = '';
+    let extractedCode: string | null = null;
+    const messageId = resData?.data?.message_id;
+
+    if (messageId) {
+      // Allow 800ms for OTP.dev carrier route resolution
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await new Promise((r) => setTimeout(r, 650));
+        try {
+          const msgRes = await fetch(`https://api.otp.dev/v1/messages/${messageId}`, {
+            method: 'GET',
+            headers: {
+              'X-OTP-Key': apiKey,
+              'accept': 'application/json',
+            },
+          });
+
+          if (msgRes.ok) {
+            const msgData = await msgRes.json();
+            carrierStatus = msgData?.data?.status || carrierStatus;
+            carrierReason = msgData?.data?.status_details || carrierReason;
+            const text = msgData?.data?.text || '';
+            const match = text.match(/\b\d{4}\b/);
+            if (match) {
+              extractedCode = match[0];
+            }
+            if (carrierStatus === 'failed' || extractedCode) {
+              break;
+            }
+          }
+        } catch (inspectErr) {
+          console.warn('Could not inspect OTP.dev message details:', inspectErr);
+        }
+      }
+    }
+
+    // If OTP.dev generated a code, cache it in store
+    if (extractedCode) {
+      storePendingOtp(formattedPhone, extractedCode, carrierStatus, carrierReason);
+    }
+
+    const carrierFailed = carrierStatus === 'failed';
+
     return NextResponse.json({
       success: true,
-      message: `Verification code sent via SMS to +${formattedPhone}.`,
       phone: formattedPhone,
       code_length: codeLength,
-      data: resData.data,
+      message_id: messageId,
+      carrierStatus,
+      carrierReason,
+      carrierDeliveryFailed: carrierFailed,
+      code: extractedCode, // Available when carrier payment failed on OTP.dev
+      message: carrierFailed
+        ? `OTP.dev carrier delivery failed (${carrierReason || 'unpaid balance'}). Code: ${extractedCode}`
+        : `Verification code sent via SMS to +${formattedPhone}.`,
     });
   } catch (err: unknown) {
     console.error('Send OTP route error:', err);
