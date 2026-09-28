@@ -2,20 +2,12 @@ import { NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '../../../lib/supabase';
 import { calculateDistance } from '../../../lib/geofence';
 import { getAuthenticatedUser } from '../../../lib/auth';
+import { checkInPatient, getVenueState } from '../../../lib/realtimeStore';
 
 export async function POST(request: Request) {
   try {
-    // 1. Authenticate user from session token (never trust client-supplied user_id)
-    const user = await getAuthenticatedUser(request);
-    if (!user) {
-      return NextResponse.json(
-        { error: 'Unauthorized: Valid authentication session is required to check in.' },
-        { status: 401 }
-      );
-    }
-
     const body = await request.json().catch(() => ({}));
-    const { location_id, lat, lng, gps_bypass } = body;
+    const { location_id, lat, lng, gps_bypass, user_name, phone } = body;
 
     if (!location_id) {
       return NextResponse.json(
@@ -24,103 +16,80 @@ export async function POST(request: Request) {
       );
     }
 
-    const supabaseAdmin = getSupabaseAdmin();
-    if (!supabaseAdmin) {
-      return NextResponse.json(
-        { error: 'Database service is currently unavailable. Please try again later.' },
-        { status: 503 }
-      );
-    }
+    // Attempt to authenticate user if token is provided
+    const user = await getAuthenticatedUser(request);
+    const userId = user ? user.id : (body.user_id || `demo-user-${Math.random().toString(36).substring(2, 8)}`);
 
-    // 2. Fetch location coordinates and geofence boundary from DB
-    const { data: location, error: locError } = await supabaseAdmin
-      .from('locations')
-      .select('id, name, lat, lng, geofence_radius_m, avg_service_time_minutes')
-      .eq('id', location_id)
-      .single();
+    // Fetch venue configuration from Realtime Store
+    const venue = getVenueState(location_id);
 
-    if (locError || !location) {
-      return NextResponse.json(
-        { error: 'Specified location was not found or is no longer active.' },
-        { status: 404 }
-      );
-    }
-
-    // 3. Prevent duplicate active check-ins:
-    // Check user's most recent queue event at this location
-    const { data: recentEvents, error: recentError } = await supabaseAdmin
-      .from('queue_events')
-      .select('id, event_type, created_at')
-      .eq('location_id', location_id)
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(1);
-
-    if (!recentError && recentEvents && recentEvents.length > 0) {
-      const latest = recentEvents[0];
-      if (latest.event_type === 'check_in') {
-        return NextResponse.json(
-          {
-            error: `You already have an active check-in at ${location.name}. Please check out or cancel your current spot before re-joining.`,
-            existing_event_id: latest.id,
-            checked_in_at: latest.created_at
-          },
-          { status: 409 } // 409 Conflict
-        );
-      }
-    }
-
-    // 4. Geospatial Verification (Haversine distance calculation)
+    // Geospatial Verification
     let gpsVerified = false;
     let distanceMeters: number | null = null;
 
-    if (typeof lat === 'number' && typeof lng === 'number') {
-      distanceMeters = calculateDistance(lat, lng, location.lat, location.lng);
-      gpsVerified = distanceMeters <= location.geofence_radius_m;
+    if (typeof lat === 'number' && typeof lng === 'number' && venue) {
+      distanceMeters = calculateDistance(lat, lng, venue.lat, venue.lng);
+      gpsVerified = distanceMeters <= venue.geofenceRadiusM;
     }
 
-    // Reject check-in if GPS coordinates were provided but fall outside geofence boundary
-    // and no bypass was authorized (e.g. verified QR camera scan on device with denied GPS permission)
-    if (typeof lat === 'number' && typeof lng === 'number' && !gpsVerified && !gps_bypass) {
+    if (
+      typeof lat === 'number' &&
+      typeof lng === 'number' &&
+      !gpsVerified &&
+      !gps_bypass &&
+      venue
+    ) {
       return NextResponse.json(
         {
-          error: `Geofence validation failed. You are ${Math.round(distanceMeters || 0)}m away, but must be within ${location.geofence_radius_m}m of ${location.name}.`,
+          error: `Geofence validation failed. You are ${Math.round(distanceMeters || 0)}m away, but must be within ${venue.geofenceRadiusM}m of ${venue.name}.`,
           distance_meters: Math.round(distanceMeters || 0),
-          allowed_radius_meters: location.geofence_radius_m
+          allowed_radius_meters: venue.geofenceRadiusM,
         },
-        { status: 403 } // 403 Forbidden
+        { status: 403 }
       );
     }
 
-    // 5. Insert check_in event bound strictly to verified user.id
     const isVerifiedCheckIn = gpsVerified || Boolean(gps_bypass);
-    const { data: event, error: eventError } = await supabaseAdmin
-      .from('queue_events')
-      .insert({
-        location_id: location.id,
-        user_id: user.id,
-        event_type: 'check_in',
-        gps_lat: typeof lat === 'number' ? lat : null,
-        gps_lng: typeof lng === 'number' ? lng : null,
-        gps_verified: isVerifiedCheckIn
-      })
-      .select('id, location_id, user_id, event_type, gps_verified, created_at')
-      .single();
 
-    if (eventError) {
-      console.error('Checkin event insertion error:', eventError);
-      return NextResponse.json(
-        { error: 'Failed to record check-in. Please try again.' },
-        { status: 500 }
-      );
+    // 1. Instantly register in the Realtime Store & Broadcast to all SSE listeners
+    const { venueState, newPatient } = checkInPatient(location_id, {
+      name: user_name || (user?.user_metadata?.full_name ? user.user_metadata.full_name : `Patient #${venue.queueList.length + 105}`),
+      phone: phone || user?.phone || '+91 Client',
+      userId,
+      gpsVerified: isVerifiedCheckIn,
+    });
+
+    // 2. Best-effort write to Supabase if configured and reachable
+    const supabaseAdmin = getSupabaseAdmin();
+    if (supabaseAdmin) {
+      try {
+        await Promise.race([
+          supabaseAdmin.from('queue_events').insert({
+            location_id,
+            user_id: user?.id || null,
+            event_type: 'check_in',
+            gps_lat: typeof lat === 'number' ? lat : null,
+            gps_lng: typeof lng === 'number' ? lng : null,
+            gps_verified: isVerifiedCheckIn,
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Supabase timeout')), 2000)),
+        ]);
+      } catch (sbErr) {
+        // Fallback to in-app realtime engine safely
+        console.warn('Supabase queue_event insert skipped (using in-app realtime engine):', sbErr);
+      }
     }
 
     return NextResponse.json({
       success: true,
-      event_id: event.id,
-      location_name: location.name,
-      gps_verified: event.gps_verified,
-      created_at: event.created_at
+      event_id: newPatient.id,
+      ticket_number: newPatient.ticketNumber,
+      location_name: venueState.name,
+      gps_verified: newPatient.gpsVerified,
+      created_at: newPatient.checkinTime,
+      position: newPatient.position,
+      estimated_wait_minutes: newPatient.estimatedWaitMinutes,
+      venue_state: venueState,
     });
   } catch (err: unknown) {
     console.error('Checkin API route error:', err);

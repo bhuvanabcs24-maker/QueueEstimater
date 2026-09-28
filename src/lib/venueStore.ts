@@ -17,87 +17,58 @@ export interface Venue {
   is_custom?: boolean;
 }
 
-export const INITIAL_VENUES: Venue[] = [
-  {
-    id: 'mock-clinic-a',
-    name: 'General Medicine Clinic A',
-    category: 'Clinic',
-    address: 'Medical Plaza, Counter A',
-    lat: 37.7749,
-    lng: -122.4194,
-    geofence_radius_m: 200,
-    avg_service_time_minutes: 10,
-    current_queue_length: 3,
-  },
-  {
-    id: 'mock-lab-b',
-    name: 'Express Lab Services',
-    category: 'Laboratory',
-    address: 'Diagnostic Wing, Counter 12',
-    lat: 37.7752,
-    lng: -122.4189,
-    geofence_radius_m: 150,
-    avg_service_time_minutes: 6,
-    current_queue_length: 1,
-  },
-  {
-    id: 'mock-peds-c',
-    name: 'Pediatric Outpatient Clinic',
-    category: 'Pediatrics',
-    address: 'Children Block, Floor 2',
-    lat: 37.7745,
-    lng: -122.4201,
-    geofence_radius_m: 150,
-    avg_service_time_minutes: 12,
-    current_queue_length: 5,
-  },
-  {
-    id: '11111111-1111-1111-1111-111111111111',
-    name: 'City Health Clinic - Counter 1',
-    category: 'Healthcare',
-    address: '123 Main St, Central City',
-    lat: 12.9716,
-    lng: 77.5946,
-    geofence_radius_m: 200,
-    avg_service_time_minutes: 5,
-    current_queue_length: 4,
-  },
-  {
-    id: '22222222-2222-2222-2222-222222222222',
-    name: 'Campus Administrative Desk',
-    category: 'Education',
-    address: 'Block B, University Center',
-    lat: 12.972,
-    lng: 77.595,
-    geofence_radius_m: 150,
-    avg_service_time_minutes: 4,
-    current_queue_length: 2,
-  },
-];
+// Zero mock/sample venues - only real facilities added in database or newly registered
+export const INITIAL_VENUES: Venue[] = [];
 
 const STORAGE_KEY = 'registered_venues_v1';
+
+// Legacy mock IDs to cleanse from user storage
+const MOCK_IDS = new Set([
+  'mock-clinic-a',
+  'mock-lab-b',
+  'mock-peds-c',
+  '11111111-1111-1111-1111-111111111111',
+  '22222222-2222-2222-2222-222222222222',
+]);
 
 export function getAllVenues(): Venue[] {
   let custom: Venue[] = [];
   if (typeof window !== 'undefined') {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) custom = JSON.parse(raw);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          // Strictly filter out any sample/mock venues from previous sessions
+          custom = parsed.filter(
+            (v: Venue) =>
+              v &&
+              v.id &&
+              !MOCK_IDS.has(v.id) &&
+              !v.id.startsWith('mock-') &&
+              !v.name.includes('Mock')
+          );
+
+          // Update storage if any mock items were cleansed
+          if (custom.length !== parsed.length) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(custom));
+          }
+        }
+      }
     } catch (e) {
-      console.error(e);
+      console.error('Error reading registered venues:', e);
     }
   }
 
   const map = new Map<string, Venue>();
-  INITIAL_VENUES.forEach((v) => map.set(v.id, v));
   custom.forEach((v) => map.set(v.id, { ...v, is_custom: true }));
 
   return Array.from(map.values());
 }
 
 /**
- * Dynamically resolves all venues relative to user's real-time GPS coordinates
- * so sample venues appear in the immediate walking vicinity (100m - 900m)
+ * Resolves all real venues with real physical distance to user GPS.
+ * No fake offsets or mock locations.
  */
 export function getVenuesNearGps(userLat?: number, userLng?: number): Venue[] {
   const all = getAllVenues();
@@ -106,31 +77,10 @@ export function getVenuesNearGps(userLat?: number, userLng?: number): Venue[] {
     return all;
   }
 
-  // Offsets for demo sample venues to place them realistically near user's GPS
-  const offsets: Record<string, { lat: number; lng: number }> = {
-    'mock-clinic-a': { lat: 0.0012, lng: 0.001 }, // ~150m
-    'mock-lab-b': { lat: -0.002, lng: 0.0015 }, // ~260m
-    'mock-peds-c': { lat: 0.0035, lng: -0.0025 }, // ~500m
-    '11111111-1111-1111-1111-111111111111': { lat: -0.0045, lng: -0.003 }, // ~650m
-    '22222222-2222-2222-2222-222222222222': { lat: 0.006, lng: 0.004 }, // ~900m
-  };
-
   const processed = all.map((v) => {
-    let lat = v.lat;
-    let lng = v.lng;
-
-    // If it's a sample venue and custom GPS is available, anchor around user GPS
-    if (!v.is_custom && offsets[v.id]) {
-      lat = userLat + offsets[v.id].lat;
-      lng = userLng + offsets[v.id].lng;
-    }
-
-    const dist = calculateDistance(userLat, userLng, lat, lng);
-
+    const dist = calculateDistance(userLat, userLng, v.lat, v.lng);
     return {
       ...v,
-      lat,
-      lng,
       distance_meters: Math.round(dist),
     };
   });
@@ -138,30 +88,57 @@ export function getVenuesNearGps(userLat?: number, userLng?: number): Venue[] {
   return processed.sort((a, b) => (a.distance_meters || 0) - (b.distance_meters || 0));
 }
 
-export function getVenueById(id: string, userLat?: number, userLng?: number): Venue {
+export function getVenueById(id: string, userLat?: number, userLng?: number): Venue | null {
   const all = getVenuesNearGps(userLat, userLng);
   const found = all.find((v) => v.id === id || v.id.toLowerCase() === id.toLowerCase());
 
   if (found) return found;
 
-  const formattedTitle = id
-    .replace(/[-_]/g, ' ')
-    .replace(/\b\w/g, (l) => l.toUpperCase());
+  // Check sessionStorage or fallback
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const list: Venue[] = JSON.parse(raw);
+        const item = list.find((v) => v.id === id || v.id.toLowerCase() === id.toLowerCase());
+        if (item) return item;
+      }
+    } catch {
+      // Ignore
+    }
+  }
 
-  const fallbackLat = typeof userLat === 'number' ? userLat : 12.9716;
-  const fallbackLng = typeof userLng === 'number' ? userLng : 77.5946;
+  return null;
+}
 
-  return {
-    id,
-    name: formattedTitle.length > 20 ? `Venue (${id.substring(0, 8)})` : formattedTitle,
-    category: 'Venue Counter',
-    address: 'Mapped QR Location Site',
-    lat: fallbackLat,
-    lng: fallbackLng,
-    geofence_radius_m: 150,
-    avg_service_time_minutes: 5,
-    current_queue_length: 2,
-  };
+/**
+ * Fetch latest real registered venues from server database and sync locally
+ */
+export async function syncVenuesFromDatabase(): Promise<Venue[]> {
+  try {
+    const res = await fetch('/api/venues');
+    if (!res.ok) return getAllVenues();
+    const data = await res.json();
+    if (data && Array.isArray(data.venues)) {
+      const serverVenues: Venue[] = data.venues.filter(
+        (v: Venue) => v && v.id && !MOCK_IDS.has(v.id) && !v.id.startsWith('mock-')
+      );
+
+      if (typeof window !== 'undefined') {
+        const local = getAllVenues();
+        const map = new Map<string, Venue>();
+        local.forEach((v) => map.set(v.id, v));
+        serverVenues.forEach((v) => map.set(v.id, { ...v, is_custom: true }));
+        const merged = Array.from(map.values());
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+        return merged;
+      }
+      return serverVenues;
+    }
+  } catch (err) {
+    console.warn('Venue database sync fallback:', err);
+  }
+  return getAllVenues();
 }
 
 export function registerNewVenue(venue: Omit<Venue, 'id'> & { id?: string }): Venue {
@@ -176,27 +153,63 @@ export function registerNewVenue(venue: Omit<Venue, 'id'> & { id?: string }): Ve
   };
 
   if (typeof window !== 'undefined') {
-    const existing = getAllVenues().filter((v) => v.is_custom);
+    const existing = getAllVenues().filter((v) => v.is_custom && !MOCK_IDS.has(v.id));
     existing.push(fullVenue);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
   }
 
+  // Sync with real-time server & database via /api/venues
+  if (typeof window !== 'undefined') {
+    fetch('/api/venues', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fullVenue),
+    }).catch(() => {});
+
+    // Also broadcast SSE event
+    fetch('/api/realtime/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'REGISTER_VENUE',
+        venueId: fullVenue.id,
+        payload: {
+          id: fullVenue.id,
+          name: fullVenue.name,
+          category: fullVenue.category,
+          address: fullVenue.address,
+          lat: fullVenue.lat,
+          lng: fullVenue.lng,
+          geofence_radius_m: fullVenue.geofence_radius_m,
+          avg_service_time_minutes: fullVenue.avg_service_time_minutes,
+        },
+      }),
+    }).catch(() => {});
+  }
+
   if (isSupabaseConfigured) {
-    supabase
-      .from('locations')
-      .insert({
-        id: fullVenue.id,
-        name: fullVenue.name,
-        category: fullVenue.category,
-        address: fullVenue.address,
-        lat: fullVenue.lat,
-        lng: fullVenue.lng,
-        geofence_radius_m: fullVenue.geofence_radius_m,
-        avg_service_time_mins: fullVenue.avg_service_time_minutes,
-      })
-      .then(({ error }) => {
-        if (error) console.warn('Supabase venue insert notice:', error.message);
-      });
+    try {
+      supabase
+        .from('locations')
+        .insert({
+          id: fullVenue.id,
+          name: fullVenue.name,
+          category: fullVenue.category,
+          address: fullVenue.address,
+          lat: fullVenue.lat,
+          lng: fullVenue.lng,
+          geofence_radius_m: fullVenue.geofence_radius_m,
+          avg_service_time_mins: fullVenue.avg_service_time_minutes,
+        })
+        .then(
+          ({ error }) => {
+            if (error) console.warn('Supabase venue insert notice:', error.message);
+          },
+          () => {}
+        );
+    } catch {
+      // Ignore
+    }
   }
 
   return fullVenue;
@@ -209,7 +222,8 @@ export function recordUserServed(locationId: string, durationMinutes: number) {
   if (index !== -1) {
     const v = venues[index];
     const totalServed = (v.total_served || 0) + 1;
-    const updatedAvg = Math.round(((v.avg_service_time_minutes * (totalServed - 1) + durationMinutes) / totalServed) * 10) / 10;
+    const updatedAvg =
+      Math.round(((v.avg_service_time_minutes * (totalServed - 1) + durationMinutes) / totalServed) * 10) / 10;
 
     v.avg_service_time_minutes = Math.max(1, updatedAvg);
     v.total_served = totalServed;

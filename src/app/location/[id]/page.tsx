@@ -5,7 +5,14 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '../../../lib/supabase';
 import { calculateDistance } from '../../../lib/geofence';
-import { getVenueById } from '@/lib/venueStore';
+import { getVenueById, syncVenuesFromDatabase } from '@/lib/venueStore';
+import {
+  ArrowLeft,
+  MapPin,
+  QrCode,
+  Navigation,
+  Activity,
+} from 'lucide-react';
 
 interface Location {
   id: string;
@@ -16,18 +23,13 @@ interface Location {
   lng: number;
   geofence_radius_m: number;
   avg_service_time_minutes: number;
+  current_queue_length?: number;
 }
 
 interface LocationEstimate {
   current_queue_length: number;
   avg_wait_minutes: number;
 }
-
-const MOCK_LOCATIONS: Location[] = [
-  { id: 'mock-clinic-a', name: 'General Medicine Clinic A', address: '100 Medical Plaza, Suite 4', category: 'Clinic', lat: 37.7749, lng: -122.4194, geofence_radius_m: 200, avg_service_time_minutes: 12 },
-  { id: 'mock-lab-b', name: 'Express Lab Services', address: '100 Medical Plaza, Suite 12', category: 'Laboratory', lat: 37.7752, lng: -122.4189, geofence_radius_m: 100, avg_service_time_minutes: 8 },
-  { id: 'mock-peds-c', name: 'Pediatric Outpatient Clinic', address: '102 Medical Plaza, Floor 2', category: 'Pediatrics', lat: 37.7745, lng: -122.4201, geofence_radius_m: 150, avg_service_time_minutes: 15 }
-];
 
 export default function LocationDetailPage() {
   const params = useParams();
@@ -37,22 +39,17 @@ export default function LocationDetailPage() {
   const [location, setLocation] = useState<Location | null>(null);
   const [estimate, setEstimate] = useState<LocationEstimate>({ current_queue_length: 0, avg_wait_minutes: 0 });
   const [loading, setLoading] = useState(true);
-  
-  // Auth state
+
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  
-  // Geolocation state
   const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'loading' | 'success' | 'denied' | 'error'>('idle');
   const [distanceToLocation, setDistanceToLocation] = useState<number | null>(null);
   const [withinGeofence, setWithinGeofence] = useState(false);
-  
+
   const [submittingCheckIn, setSubmittingCheckIn] = useState(false);
   const [error, setError] = useState('');
   const [hasExistingCheckIn, setHasExistingCheckIn] = useState(false);
-  const [isDemoMode, setIsDemoMode] = useState(false);
 
-  // Perform GPS Geofencing lookup
   const triggerGpsCheck = useCallback((loc: Location) => {
     if (!navigator.geolocation) {
       setGpsStatus('error');
@@ -72,7 +69,6 @@ export default function LocationDetailPage() {
         setWithinGeofence(dist <= loc.geofence_radius_m);
       },
       (geoError) => {
-        console.warn('GPS location access denied or error:', geoError);
         setGpsStatus(geoError.code === geoError.PERMISSION_DENIED ? 'denied' : 'error');
       },
       { enableHighAccuracy: true, timeout: 8000 }
@@ -84,8 +80,7 @@ export default function LocationDetailPage() {
     setError('');
     setHasExistingCheckIn(false);
 
-    // Check auth
-    const demoPhone = localStorage.getItem('demo_authenticated_phone');
+    const demoPhone = localStorage.getItem('demo_authenticated_phone') || localStorage.getItem('user_phone');
     if (demoPhone) {
       setIsLoggedIn(true);
       const demoCheckIn = localStorage.getItem('demo_active_check_in');
@@ -96,7 +91,7 @@ export default function LocationDetailPage() {
             setHasExistingCheckIn(true);
           }
         } catch {
-          // Ignore parse errors
+          // Ignore
         }
       }
     } else {
@@ -104,103 +99,60 @@ export default function LocationDetailPage() {
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.user) {
           setIsLoggedIn(true);
-          // Check if user already has an active checkin
-          const { data } = await supabase
-            .from('queue_events')
-            .select('location_id, event_type')
-            .eq('user_id', session.user.id)
-            .order('created_at', { ascending: false })
-            .limit(1);
-
-          if (data && data.length > 0 && data[0].event_type === 'check_in' && data[0].location_id === locationId) {
-            setHasExistingCheckIn(true);
-          }
         }
       } catch {
-        // Fallback for session lookup
+        // Fallback
       }
     }
 
-    // Load Location Details
+    // Load venue details
     try {
-      const isPlaceholder = 
-        process.env.NEXT_PUBLIC_SUPABASE_URL?.includes('placeholder') || 
-        !process.env.NEXT_PUBLIC_SUPABASE_URL;
-      
-      if (isPlaceholder || locationId.startsWith('mock-') || locationId.startsWith('venue_')) {
-        const venue = getVenueById(locationId, userCoords?.lat, userCoords?.lng);
-        setLocation(venue);
-        
-        const currentQueue = venue.current_queue_length ?? 2;
-        setEstimate({
-          current_queue_length: currentQueue,
-          avg_wait_minutes: Math.round(currentQueue * venue.avg_service_time_minutes)
-        });
-        
-        setLoading(false);
-        triggerGpsCheck(venue);
-        return;
+      let venue = getVenueById(locationId, userCoords?.lat, userCoords?.lng);
+      if (!venue) {
+        const dbVenues = await syncVenuesFromDatabase();
+        venue = dbVenues.find((v) => v.id === locationId || v.id.toLowerCase() === locationId.toLowerCase()) || null;
       }
 
-      // Fetch location details from database
-      const { data: locData, error: locError } = await supabase
-        .from('locations')
-        .select('*')
-        .eq('id', locationId)
-        .single();
-
-      if (locError) {
-        const venue = getVenueById(locationId, userCoords?.lat, userCoords?.lng);
-        setLocation(venue);
-        setEstimate({
-          current_queue_length: venue.current_queue_length ?? 2,
-          avg_wait_minutes: Math.round((venue.current_queue_length ?? 2) * venue.avg_service_time_minutes)
-        });
-        triggerGpsCheck(venue);
-        setLoading(false);
-        return;
-      }
-
-      setLocation(locData);
-
-      // Fetch active estimates
-      const { data: estData } = await supabase
-        .from('location_estimates')
-        .select('*')
-        .eq('location_id', locationId)
-        .single();
-
-      if (estData) {
-        setEstimate({
-          current_queue_length: estData.current_queue_length || 0,
-          avg_wait_minutes: Number(estData.avg_wait_minutes) || 0
-        });
-      } else {
-        setEstimate({ current_queue_length: 0, avg_wait_minutes: 0 });
-      }
-
-      triggerGpsCheck(locData);
-    } catch (err: unknown) {
-      console.warn('Error loading location from database:', err);
-      const fallbackMock = MOCK_LOCATIONS.find(l => l.id === locationId);
-      if (fallbackMock) {
-        setLocation(fallbackMock);
-        setEstimate({ current_queue_length: 3, avg_wait_minutes: 36 });
-        triggerGpsCheck(fallbackMock);
-      } else {
+      if (!venue) {
         setLocation(null);
+        setError('This facility is not registered in the database.');
+        setLoading(false);
+        return;
       }
+
+      setLocation(venue);
+
+      // Query real-time endpoint for current queue counts
+      const rtRes = await fetch(`/api/realtime/events?venueId=${encodeURIComponent(locationId)}`).catch(() => null);
+      if (rtRes && rtRes.ok) {
+        const rtData = await rtRes.json();
+        if (rtData.venue) {
+          setEstimate({
+            current_queue_length: rtData.venue.currentQueueLength,
+            avg_wait_minutes: rtData.venue.estimatedWaitMinutes,
+          });
+        } else {
+          setEstimate({
+            current_queue_length: venue.current_queue_length ?? 0,
+            avg_wait_minutes: Math.round((venue.current_queue_length ?? 0) * venue.avg_service_time_minutes),
+          });
+        }
+      } else {
+        setEstimate({
+          current_queue_length: venue.current_queue_length ?? 0,
+          avg_wait_minutes: Math.round((venue.current_queue_length ?? 0) * venue.avg_service_time_minutes),
+        });
+      }
+
+      triggerGpsCheck(venue);
+    } catch {
+      setError('Unable to load facility details.');
     } finally {
       setLoading(false);
     }
   }, [locationId, triggerGpsCheck, userCoords?.lat, userCoords?.lng]);
 
   useEffect(() => {
-    const isPlaceholder = 
-      process.env.NEXT_PUBLIC_SUPABASE_URL?.includes('placeholder') || 
-      !process.env.NEXT_PUBLIC_SUPABASE_URL;
-    setIsDemoMode(isPlaceholder);
-
     checkAuthAndLoad();
   }, [checkAuthAndLoad]);
 
@@ -216,59 +168,45 @@ export default function LocationDetailPage() {
     setError('');
 
     try {
-      const isPlaceholder = 
-        process.env.NEXT_PUBLIC_SUPABASE_URL?.includes('placeholder') || 
-        !process.env.NEXT_PUBLIC_SUPABASE_URL;
-
       const isGpsSuccess = gpsStatus === 'success';
       const gpsVerified = isGpsSuccess && withinGeofence;
 
-      // Geofence enforcement: If GPS was acquired and user is outside geofence, reject
       if (isGpsSuccess && !withinGeofence) {
         throw new Error(
           `Geofence verification failed. You are ${Math.round(distanceToLocation || 0)}m away, but must be within ${location.geofence_radius_m}m.`
         );
       }
 
-      // Simulation mode
-      if (isPlaceholder || locationId.startsWith('mock-')) {
-        setTimeout(() => {
-          const newCheckIn = {
-            id: 'demo-checkin-id-' + Math.random().toString(36).substring(2, 10),
-            location_id: location.id,
-            location_name: location.name,
-            created_at: new Date().toISOString(),
-            event_type: 'check_in',
-            gps_verified: gpsVerified || gpsStatus === 'denied',
-            position: estimate.current_queue_length + 1,
-            avg_wait_minutes: (estimate.current_queue_length + 1) * location.avg_service_time_minutes
-          };
-          localStorage.setItem('demo_active_check_in', JSON.stringify(newCheckIn));
-          setSubmittingCheckIn(false);
-          router.push('/my-queue');
-        }, 800);
-        return;
+      let token = '';
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        token = session?.access_token || '';
+      } catch {
+        // Fallback
       }
 
-      // Secure Server Check-In API Route with Authorization header
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-
-      if (!token) {
-        throw new Error('Authentication session expired. Please log in again.');
-      }
+      const clientName =
+        (typeof window !== 'undefined' &&
+          (localStorage.getItem('demo_authenticated_name') || localStorage.getItem('user_name'))) ||
+        'Patient Walk-In';
+      const clientPhone =
+        (typeof window !== 'undefined' &&
+          (localStorage.getItem('demo_authenticated_phone') || localStorage.getItem('user_phone'))) ||
+        '+91 Client';
 
       const response = await fetch('/api/checkin', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           location_id: location.id,
+          user_name: clientName,
+          phone: clientPhone,
           lat: userCoords?.lat ?? null,
           lng: userCoords?.lng ?? null,
-          gps_bypass: gpsStatus === 'denied' || gpsStatus === 'error'
+          gps_bypass: gpsStatus === 'denied' || gpsStatus === 'error',
         }),
       });
 
@@ -278,9 +216,22 @@ export default function LocationDetailPage() {
         if (response.status === 409) {
           setHasExistingCheckIn(true);
         }
-        throw new Error(resData.error || 'Server rejected check-in.');
+        throw new Error(resData.error || 'Check-in request was rejected.');
       }
 
+      const activeTicket = {
+        id: resData.event_id || `pt_${Date.now()}`,
+        ticket_number: resData.ticket_number,
+        location_id: location.id,
+        location_name: location.name,
+        created_at: new Date().toISOString(),
+        gps_verified: resData.gps_verified ?? gpsVerified,
+        position: resData.position || 1,
+        avg_wait_minutes: resData.estimated_wait_minutes || location.avg_service_time_minutes,
+        status: 'waiting',
+      };
+
+      localStorage.setItem('demo_active_check_in', JSON.stringify(activeTicket));
       router.push('/my-queue');
     } catch (err: unknown) {
       console.error('Check-in error:', err);
@@ -293,10 +244,11 @@ export default function LocationDetailPage() {
 
   if (loading) {
     return (
-      <div className="app-content" style={{ justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
-        <div className="skeleton" style={{ width: '80px', height: '80px', borderRadius: '50%', marginBottom: '16px' }} />
-        <div className="skeleton" style={{ width: '200px', height: '24px', marginBottom: '8px' }} />
-        <div className="skeleton" style={{ width: '150px', height: '16px' }} />
+      <div className="page-container" style={{ alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+        <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
+          <Activity size={32} className="pulse" color="#3b82f6" style={{ margin: '0 auto 12px auto' }} />
+          <div>Loading department information...</div>
+        </div>
       </div>
     );
   }
@@ -304,208 +256,185 @@ export default function LocationDetailPage() {
   if (!location) {
     return (
       <>
-        <header className="app-header glass">
-          <Link href="/" className="brand" style={{ textDecoration: 'none' }}>
-            <div className="brand-icon">⬅️</div>
-            <span>Home</span>
-          </Link>
-        </header>
-        <div className="app-content" style={{ justifyContent: 'center', alignItems: 'center', textAlign: 'center' }}>
-          <div style={{ fontSize: '3rem', marginBottom: '12px' }}>🔍</div>
-          <h2 style={{ fontSize: '1.3rem', fontWeight: 800 }}>Facility Not Found</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', marginTop: '6px', maxWidth: '300px', lineHeight: '1.4' }}>
-            The scanned QR code or ID does not match any registered service location.
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '24px', width: '100%', maxWidth: '280px' }}>
-            <Link href="/scan" className="btn btn-primary" style={{ textDecoration: 'none' }}>
-              📷 Scan Another QR Code
-            </Link>
-            <Link href="/" className="btn btn-secondary" style={{ textDecoration: 'none' }}>
-              Browse Available Facilities
+        <header className="app-header">
+          <div className="header-container">
+            <Link href="/" className="brand-link">
+              <ArrowLeft size={18} />
+              <span>Back to Directory</span>
             </Link>
           </div>
-        </div>
+        </header>
+
+        <main className="page-container" style={{ alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+          <div className="card" style={{ maxWidth: '440px', width: '100%', textAlign: 'center', padding: '36px 24px' }}>
+            <h1 style={{ fontSize: '1.25rem', fontWeight: 700 }}>Facility Not Found</h1>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', marginTop: '6px' }}>
+              The requested facility code does not match any active outpatient location.
+            </p>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '20px' }}>
+              <Link href="/" className="btn btn-secondary" style={{ flex: 1 }}>
+                Directory
+              </Link>
+              <Link href="/scan" className="btn btn-primary" style={{ flex: 1 }}>
+                Scan Code
+              </Link>
+            </div>
+          </div>
+        </main>
       </>
     );
   }
 
-  // Determine button state and label
   const isGpsRestricted = gpsStatus === 'success' && !withinGeofence;
   const isGpsLoading = gpsStatus === 'loading';
-  const isGpsDenied = gpsStatus === 'denied' || gpsStatus === 'error';
 
-  let ctaText = 'Check In to Queue';
-  if (!isLoggedIn) ctaText = 'Log In to Check In';
-  else if (hasExistingCheckIn) ctaText = 'View Active Spot in My Queue';
-  else if (submittingCheckIn) ctaText = 'Checking In...';
-  else if (isGpsLoading) ctaText = 'Locating via GPS...';
-  else if (isGpsRestricted) ctaText = 'Out of Geofence Range';
-  else if (isGpsDenied) ctaText = 'Check In (QR Fallback Mode)';
-
-  // Percentage within geofence for progress bar
-  const distance = distanceToLocation ?? 0;
-  const allowed = location.geofence_radius_m;
-  const ratio = Math.min(100, Math.max(0, Math.round((allowed / (distance || 1)) * 100)));
+  let ctaText = 'Check In to Waiting Line';
+  if (!isLoggedIn) ctaText = 'Sign In to Check In';
+  else if (hasExistingCheckIn) ctaText = 'View Active Ticket in My Queue';
+  else if (submittingCheckIn) ctaText = 'Registering Check-In...';
+  else if (isGpsLoading) ctaText = 'Verifying Location...';
+  else if (isGpsRestricted) ctaText = 'Outside Verification Perimeter';
 
   return (
     <>
-      {/* Header */}
-      <header className="app-header glass">
-        <Link href="/" className="brand" style={{ textDecoration: 'none' }}>
-          <div className="brand-icon">⬅️</div>
-          <span>Back</span>
-        </Link>
-        <span className="badge" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}>
-          {location.category}
-        </span>
+      <header className="app-header">
+        <div className="header-container">
+          <Link href="/" className="brand-link">
+            <ArrowLeft size={18} />
+            <span>Facility Directory</span>
+          </Link>
+          <span className="badge badge-neutral">{location.category}</span>
+        </div>
       </header>
 
-      {/* Main Content */}
-      <div className="app-content">
-        <div style={{ textAlign: 'center', marginTop: '4px' }}>
-          <h1 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.025em' }}>
-            {location.name}
-          </h1>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: '4px', lineHeight: '1.4' }}>
-            📍 {location.address}
-          </p>
+      <main className="page-container" style={{ maxWidth: '640px' }}>
+        {/* Facility Header Card */}
+        <div className="card" style={{ padding: '24px' }}>
+          <div>
+            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+              Service Department
+            </span>
+            <h1 style={{ fontSize: '1.45rem', fontWeight: 700, color: 'var(--text-primary)', marginTop: '2px' }}>
+              {location.name}
+            </h1>
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px' }}>
+              <MapPin size={14} color="#64748b" />
+              <span>{location.address}</span>
+            </p>
+          </div>
+
+          {/* Wait Time Metrics */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', backgroundColor: 'var(--bg-surface-elevated)', padding: '16px', borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+            <div>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block' }}>Estimated Wait</span>
+              <strong style={{ fontSize: '1.35rem', color: 'var(--text-primary)' }}>
+                ~{estimate.avg_wait_minutes} <span style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-muted)' }}>min</span>
+              </strong>
+            </div>
+
+            <div>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block' }}>Waiting Patients</span>
+              <strong style={{ fontSize: '1.35rem', color: 'var(--text-primary)' }}>
+                {estimate.current_queue_length}
+              </strong>
+            </div>
+
+            <div>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block' }}>Avg Service Rate</span>
+              <strong style={{ fontSize: '1.35rem', color: 'var(--text-primary)' }}>
+                {location.avg_service_time_minutes} <span style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-muted)' }}>m/pt</span>
+              </strong>
+            </div>
+          </div>
         </div>
 
-        {isDemoMode && (
-          <div className="notification-banner notification-banner-warning">
-            <span>ℹ️ <strong>Demo Simulation Mode:</strong> Testing with local sample facility data.</span>
-          </div>
-        )}
-
-        {/* Wait Estimate Hero Display */}
-        <div className="card glass estimate-display">
-          <span className="form-label" style={{ fontSize: '0.8rem' }}>Current Estimated Wait</span>
-          <div className="estimate-number">
-            {estimate.avg_wait_minutes}
-            <span className="estimate-unit" style={{ display: 'block', fontSize: '1rem', marginTop: '4px' }}>minutes</span>
-          </div>
-          <span className="badge badge-success">
-            👥 {estimate.current_queue_length} {estimate.current_queue_length === 1 ? 'person' : 'people'} currently in line
-          </span>
-          <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '12px' }}>
-            ~{location.avg_service_time_minutes} min average service time per patient
-          </p>
-        </div>
-
-        {/* GPS Geofence Verification Status Card */}
-        <div className="card glass" style={{ padding: '18px', gap: '10px' }}>
+        {/* Physical Geofence Verification Status */}
+        <div className="card" style={{ padding: '20px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2 style={{ fontSize: '0.9rem', fontWeight: 700, color: '#fff' }}>Geofence Verification</h2>
+            <span style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Navigation size={15} color="#3b82f6" />
+              <span>Perimeter Verification</span>
+            </span>
+
             {gpsStatus === 'success' && (
               <span className={`badge ${withinGeofence ? 'badge-success' : 'badge-danger'}`}>
-                {withinGeofence ? 'Within Perimeter' : 'Outside Perimeter'}
+                {withinGeofence ? 'Within Perimeter' : 'Outside Boundary'}
               </span>
             )}
           </div>
-          
+
           {gpsStatus === 'loading' && (
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              🛰️ Acquiring high-accuracy GPS coordinates...
+            <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+              Acquiring high-accuracy location reading...
             </div>
           )}
 
           {gpsStatus === 'success' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.85rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-secondary)' }}>Distance to Facility:</span>
-                <strong>{Math.round(distanceToLocation || 0)} meters</strong>
+                <span>Distance to Clinic:</span>
+                <strong style={{ color: 'var(--text-primary)' }}>{Math.round(distanceToLocation || 0)} meters</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-secondary)' }}>Allowed Boundary:</span>
-                <strong>{location.geofence_radius_m} meters</strong>
+                <span>Allowed Radius:</span>
+                <strong style={{ color: 'var(--text-primary)' }}>{location.geofence_radius_m} meters</strong>
               </div>
 
-              {/* Progress bar visual */}
-              <div className="distance-bar-container">
-                <div 
-                  className="distance-bar-fill" 
-                  style={{ 
-                    width: withinGeofence ? '100%' : `${ratio}%`, 
-                    backgroundColor: withinGeofence ? 'var(--accent)' : 'var(--danger)' 
-                  }} 
-                />
-              </div>
-
-              <div style={{ fontSize: '0.8rem', color: withinGeofence ? 'var(--accent)' : 'var(--danger)', marginTop: '4px' }}>
-                {withinGeofence 
-                  ? '✅ Physical presence confirmed. You are eligible to check in.' 
-                  : `❌ You are ${Math.round((distanceToLocation || 0) - location.geofence_radius_m)}m outside the check-in boundary.`}
+              <div style={{ fontSize: '0.78rem', color: withinGeofence ? 'var(--status-success)' : 'var(--status-danger)', marginTop: '4px' }}>
+                {withinGeofence
+                  ? 'Physical presence verified. You are eligible to register in the queue.'
+                  : `You are ${Math.round((distanceToLocation || 0) - location.geofence_radius_m)}m outside the check-in boundary.`}
               </div>
             </div>
           )}
 
-          {isGpsDenied && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div style={{ color: 'var(--warning)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                ⚠️ Location services unavailable or permission denied.
-              </div>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.78rem', lineHeight: '1.35' }}>
-                Because you scanned the physical on-site QR code, <strong>QR-Only Fallback</strong> will allow you to join the queue without GPS blocking.
-              </p>
+          {(gpsStatus === 'denied' || gpsStatus === 'error') && (
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              Location permissions unavailable. QR scan confirmation will be used to authorize check-in.
             </div>
           )}
         </div>
 
         {error && (
-          <div className="notification-banner notification-banner-error">
+          <div className="alert-banner alert-banner-error">
             <span>{error}</span>
           </div>
         )}
 
-        {/* Existing check-in notification */}
         {hasExistingCheckIn && (
-          <div className="notification-banner notification-banner-info">
-            <span>
-              You already have an active check-in at this location. Tap below to track your place.
-            </span>
+          <div className="alert-banner alert-banner-info">
+            <span>You already have an active check-in ticket at this location.</span>
           </div>
         )}
 
-        {/* Action Buttons */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '4px' }}>
+        {/* Check In Action Buttons */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {hasExistingCheckIn ? (
-            <Link href="/my-queue" className="btn btn-primary" style={{ textDecoration: 'none' }}>
-              🚀 Open My Active Queue
+            <Link href="/my-queue" className="btn btn-primary" style={{ padding: '13px' }}>
+              <span>View My Active Ticket</span>
             </Link>
           ) : (
             <button
-              id="checkin-btn"
               onClick={handleCheckIn}
               className="btn btn-primary"
-              disabled={
-                submittingCheckIn || 
-                isGpsLoading || 
-                (isLoggedIn && isGpsRestricted)
-              }
+              style={{ padding: '13px' }}
+              disabled={submittingCheckIn || isGpsLoading || (isLoggedIn && isGpsRestricted)}
             >
-              {ctaText}
+              <span>{ctaText}</span>
             </button>
           )}
 
-          {isGpsRestricted && !hasExistingCheckIn && (
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textAlign: 'center', lineHeight: '1.4' }}>
-              ⚠️ You must be physically at the location to check in. If you are on-site, try refreshing your browser to acquire an updated GPS reading.
-            </p>
-          )}
-
-          <Link href="/" className="btn btn-secondary" style={{ textDecoration: 'none' }}>
-            Back to Directory
-          </Link>
-
-          <Link 
-            href={`/location/${locationId}/qr`} 
-            className="btn btn-secondary" 
-            style={{ textDecoration: 'none', border: '1px solid rgba(255, 255, 255, 0.15)' }}
-          >
-            🖨️ Printable QR Poster
-          </Link>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <Link href="/" className="btn btn-secondary" style={{ flex: 1 }}>
+              Back to Directory
+            </Link>
+            <Link href={`/location/${locationId}/qr`} className="btn btn-secondary" style={{ flex: 1 }}>
+              <QrCode size={14} />
+              <span>Desk QR Poster</span>
+            </Link>
+          </div>
         </div>
-      </div>
+      </main>
     </>
   );
 }

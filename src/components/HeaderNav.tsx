@@ -2,20 +2,22 @@
 
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { User, LogOut, Phone, ShieldCheck, ChevronDown, UserCheck, X, Stethoscope } from 'lucide-react';
+import { User, LogOut, ChevronDown, UserCheck, X, Stethoscope, Ticket } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { useRealtimeQueue } from '@/lib/useRealtimeQueue';
 
 export default function HeaderNav() {
   const [userName, setUserName] = useState<string | null>(null);
   const [userPhone, setUserPhone] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const modalRef = useRef<HTMLDivElement>(null);
+  const { connected } = useRealtimeQueue();
 
   useEffect(() => {
     const checkUser = async () => {
       const storedName = localStorage.getItem('demo_authenticated_name') || localStorage.getItem('user_name');
       const storedPhone = localStorage.getItem('demo_authenticated_phone') || localStorage.getItem('user_phone');
-      
+
       if (storedName || storedPhone) {
         setUserName(storedName || 'Registered User');
         setUserPhone(storedPhone || '+91 User');
@@ -23,12 +25,16 @@ export default function HeaderNav() {
       }
 
       if (isSupabaseConfigured) {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
-          const fullName = session.user.user_metadata?.full_name || 'Registered User';
-          const phoneNum = session.user.phone || '+91 User';
-          setUserName(fullName);
-          setUserPhone(phoneNum);
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user) {
+            const fullName = session.user.user_metadata?.full_name || 'Registered User';
+            const phoneNum = session.user.phone || '+91 User';
+            setUserName(fullName);
+            setUserPhone(phoneNum);
+          }
+        } catch {
+          // Ignore
         }
       }
     };
@@ -56,7 +62,11 @@ export default function HeaderNav() {
     localStorage.removeItem('demo_active_check_in');
     localStorage.removeItem('active_queue');
     if (isSupabaseConfigured) {
-      await supabase.auth.signOut();
+      try {
+        await supabase.auth.signOut();
+      } catch {
+        // Ignore
+      }
     }
     setUserName(null);
     setUserPhone(null);
@@ -65,130 +75,146 @@ export default function HeaderNav() {
   };
 
   return (
-    <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '8px' }}>
-      <Link href="/doctor" style={{ fontSize: '0.8rem', color: '#818cf8', background: 'rgba(99, 102, 241, 0.12)', border: '1px solid rgba(99, 102, 241, 0.25)', padding: '5px 10px', borderRadius: '9999px', fontWeight: 700, textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '4px' }}>
-        <Stethoscope size={14} /> Doctor
-      </Link>
-      <Link href="/my-queue" className="nav-link" style={{ fontSize: '0.85rem' }}>
-        <span className="pulse-dot" style={{ display: 'inline-block', marginRight: '6px' }}></span>
-        My Spot
+    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+      {/* Live Synchronization Status Indicator */}
+      <div
+        title={connected ? 'Connected to live real-time hospital event stream' : 'Establishing stream connection...'}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '4px 10px',
+          borderRadius: 'var(--radius-pill)',
+          backgroundColor: connected ? 'var(--status-success-bg)' : 'var(--status-warning-bg)',
+          border: `1px solid ${connected ? 'var(--status-success-border)' : 'var(--status-warning-border)'}`,
+          color: connected ? 'var(--status-success)' : 'var(--status-warning)',
+          fontSize: '0.75rem',
+          fontWeight: 600,
+          letterSpacing: '0.01em',
+        }}
+      >
+        <span
+          style={{
+            width: '6px',
+            height: '6px',
+            borderRadius: '50%',
+            backgroundColor: connected ? 'var(--status-success)' : 'var(--status-warning)',
+            display: 'inline-block',
+          }}
+          className={connected ? 'pulse' : ''}
+        />
+        <span>{connected ? 'Live Sync' : 'Connecting'}</span>
+      </div>
+
+      {/* Navigation Links */}
+      <Link
+        href="/my-queue"
+        className="btn btn-secondary"
+        style={{ padding: '6px 12px', fontSize: '0.82rem' }}
+      >
+        <Ticket size={14} />
+        <span>My Ticket</span>
       </Link>
 
+      <Link
+        href="/doctor"
+        className="btn btn-secondary"
+        style={{
+          padding: '6px 12px',
+          fontSize: '0.82rem',
+          backgroundColor: 'rgba(37, 99, 235, 0.1)',
+          borderColor: 'rgba(37, 99, 235, 0.3)',
+          color: '#60a5fa',
+        }}
+      >
+        <Stethoscope size={14} />
+        <span>Staff Portal</span>
+      </Link>
+
+      {/* User Login or Profile Menu */}
       {userName ? (
-        <button
-          onClick={() => setShowModal(!showModal)}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            background: 'rgba(99, 102, 241, 0.15)',
-            border: '1px solid rgba(99, 102, 241, 0.3)',
-            padding: '6px 12px',
-            borderRadius: '9999px',
-            color: '#fff',
-            fontSize: '0.82rem',
-            fontWeight: 700,
-            cursor: 'pointer',
-          }}
-        >
-          <User size={15} color="#6366f1" />
-          <span>{userName}</span>
-          <ChevronDown size={14} style={{ opacity: 0.7, transform: showModal ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
-        </button>
-      ) : (
-        <Link
-          href="/login"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            background: 'var(--accent, #6366f1)',
-            color: '#fff',
-            padding: '6px 14px',
-            borderRadius: '9999px',
-            fontSize: '0.82rem',
-            fontWeight: 700,
-            textDecoration: 'none',
-          }}
-        >
-          <UserCheck size={16} />
-          Login
-        </Link>
-      )}
-
-      {/* Personal Info Profile Modal Dropdown */}
-      {showModal && userName && (
-        <div
-          ref={modalRef}
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 8px)',
-            right: 0,
-            width: '280px',
-            background: '#0f172a',
-            border: '1px solid rgba(255, 255, 255, 0.12)',
-            borderRadius: '16px',
-            padding: '16px',
-            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)',
-            zIndex: 1000,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '12px',
-            color: '#fff',
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '10px' }}>
-            <span style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94a3b8' }}>
-              Personal Info
-            </span>
-            <button onClick={() => setShowModal(false)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}>
-              <X size={16} />
-            </button>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <div style={{ width: '38px', height: '38px', borderRadius: '50%', background: 'rgba(99,102,241,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6366f1' }}>
-                <User size={20} />
-              </div>
-              <div>
-                <b style={{ fontSize: '0.95rem', display: 'block' }}>{userName}</b>
-                <span style={{ fontSize: '0.75rem', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <ShieldCheck size={12} /> Verified Account
-                </span>
-              </div>
-            </div>
-
-            {userPhone && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.04)', padding: '8px 12px', borderRadius: '8px', fontSize: '0.8rem', color: '#cbd5e1' }}>
-                <Phone size={14} color="#94a3b8" />
-                <span>{userPhone}</span>
-              </div>
-            )}
-          </div>
-
+        <div style={{ position: 'relative' }}>
           <button
-            onClick={handleLogout}
+            onClick={() => setShowModal(!showModal)}
             style={{
-              marginTop: '4px',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px',
-              width: '100%',
-              padding: '10px',
-              background: 'rgba(239, 68, 68, 0.15)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              borderRadius: '8px',
-              color: '#ef4444',
-              fontWeight: 700,
-              fontSize: '0.85rem',
+              gap: '6px',
+              backgroundColor: 'var(--bg-surface-elevated)',
+              border: '1px solid var(--border-default)',
+              padding: '6px 12px',
+              borderRadius: 'var(--radius-pill)',
+              color: 'var(--text-primary)',
+              fontSize: '0.82rem',
+              fontWeight: 600,
               cursor: 'pointer',
             }}
           >
-            <LogOut size={16} /> Log Out
+            <User size={14} color="#94a3b8" />
+            <span>{userName}</span>
+            <ChevronDown size={14} style={{ opacity: 0.6 }} />
           </button>
+
+          {/* Profile Dropdown */}
+          {showModal && (
+            <div
+              ref={modalRef}
+              style={{
+                position: 'absolute',
+                top: 'calc(100% + 8px)',
+                right: 0,
+                width: '240px',
+                backgroundColor: 'var(--bg-surface)',
+                border: '1px solid var(--border-default)',
+                borderRadius: 'var(--radius-lg)',
+                padding: '16px',
+                boxShadow: 'var(--shadow-lg)',
+                zIndex: 100,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                  User Account
+                </span>
+                <button
+                  onClick={() => setShowModal(false)}
+                  style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{userName}</div>
+                {userPhone && (
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                    {userPhone}
+                  </div>
+                )}
+              </div>
+
+              <button
+                onClick={handleLogout}
+                className="btn btn-outline-danger"
+                style={{ width: '100%', padding: '8px', fontSize: '0.82rem' }}
+              >
+                <LogOut size={14} /> Log Out
+              </button>
+            </div>
+          )}
         </div>
+      ) : (
+        <Link
+          href="/login"
+          className="btn btn-primary"
+          style={{ padding: '6px 14px', fontSize: '0.82rem' }}
+        >
+          <UserCheck size={15} />
+          <span>Sign In</span>
+        </Link>
       )}
     </div>
   );

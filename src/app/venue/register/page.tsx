@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { MapPin, Navigation, ArrowLeft, PlusCircle, Search } from 'lucide-react';
+import { MapPin, Navigation, ArrowLeft, Building2, Search, CheckCircle2, AlertCircle } from 'lucide-react';
 import { registerNewVenue } from '@/lib/venueStore';
 
 export default function RegisterVenuePage() {
@@ -19,7 +19,7 @@ export default function RegisterVenuePage() {
   const [geocoding, setGeocoding] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-  const [infoMsg, setInfoMsg] = useState('📍 Coordinates are pre-filled by default. Tap "Use My Location" or type an address to change them.');
+  const [infoMsg, setInfoMsg] = useState('Standard facility coordinates loaded. You can click "Detect My Location" or search an address.');
 
   const geocodeAddress = async (queryAddress: string) => {
     if (!queryAddress.trim()) return false;
@@ -36,7 +36,7 @@ export default function RegisterVenuePage() {
         const foundLng = Number(parseFloat(data[0].lon).toFixed(6));
         setLat(foundLat);
         setLng(foundLng);
-        setInfoMsg(`📍 Auto-filled coordinates from address: (${foundLat}, ${foundLng})`);
+        setInfoMsg(`Geocoded coordinates from address: (${foundLat}, ${foundLng})`);
         setGeocoding(false);
         return true;
       }
@@ -57,26 +57,24 @@ export default function RegisterVenuePage() {
       setLat(Number(pos.coords.latitude.toFixed(6)));
       setLng(Number(pos.coords.longitude.toFixed(6)));
       setLoadingGps(false);
-      setInfoMsg('📍 Real-time GPS coordinates acquired successfully!');
+      setInfoMsg('Real-time GPS coordinates acquired successfully.');
     };
 
     const failure = async (err: GeolocationPositionError) => {
-      console.warn('High accuracy GPS failed, trying low accuracy / address geocoding...', err);
+      console.warn('High accuracy GPS failed, trying fallback...', err);
 
       navigator.geolocation.getCurrentPosition(
         success,
         async () => {
           setLoadingGps(false);
 
-          // Attempt Address Geocoding first
           const geocoded = await geocodeAddress(address);
           if (!geocoded) {
-            // Default fallback coordinates so registration is never blocked
             const fallbackLat = 14.5492;
             const fallbackLng = 75.1481;
             setLat(fallbackLat);
             setLng(fallbackLng);
-            setInfoMsg('⚠️ GPS timed out indoors. Auto-filled standard venue coordinates so you can save.');
+            setInfoMsg('GPS timed out indoors. Pre-filled standard facility coordinates.');
           }
         },
         { enableHighAccuracy: false, timeout: 3000 }
@@ -96,7 +94,7 @@ export default function RegisterVenuePage() {
     const finalLng = lng !== '' ? Number(lng) : 75.1481;
 
     if (!name.trim() || !address.trim()) {
-      setErrorMsg('Please enter the Venue Name and Physical Address.');
+      setErrorMsg('Please enter both the facility name and physical address.');
       return;
     }
 
@@ -123,193 +121,210 @@ export default function RegisterVenuePage() {
   };
 
   return (
-    <>
-      <header className="app-header glass" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}>
-        <Link href="/" className="btn btn-secondary" style={{ width: 'auto', padding: '8px 12px', fontSize: '0.85rem', textDecoration: 'none' }}>
-          <ArrowLeft size={16} /> Home
+    <div className="page-container" style={{ maxWidth: '640px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+        <Link href="/" className="btn btn-secondary" style={{ width: 'auto', padding: '0.45rem 0.85rem', fontSize: '0.85rem' }}>
+          <ArrowLeft size={16} /> Directory
         </Link>
-        <span className="badge badge-success">Register Venue</span>
-      </header>
+        <span className="badge badge-primary">
+          <Building2 size={13} /> Facility Onboarding
+        </span>
+      </div>
 
-      <div className="app-content" style={{ maxWidth: '520px', margin: '0 auto' }}>
-        <div style={{ textAlign: 'center', margin: '12px 0 20px 0' }}>
-          <div
-            style={{
-              width: '52px',
-              height: '52px',
-              borderRadius: '16px',
-              background: 'rgba(99, 102, 241, 0.15)',
-              border: '1px solid rgba(99, 102, 241, 0.3)',
-              margin: '0 auto 12px auto',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#6366f1',
-            }}
-          >
-            <PlusCircle size={28} />
-          </div>
-          <h1 style={{ fontSize: '1.6rem', fontWeight: 800, color: '#fff' }}>Register New Venue</h1>
-          <p style={{ color: 'var(--text-secondary, #94a3b8)', fontSize: '0.85rem', marginTop: '4px' }}>
-            Map a clinic, hospital desk, or service counter and generate an instant check-in QR poster.
-          </p>
+      <div style={{ marginBottom: '1.5rem' }}>
+        <h1 style={{ fontSize: '1.5rem', fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
+          Register Service Counter / Clinic
+        </h1>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
+          Create a new triage queue counter, configure geofencing constraints, and generate a printable QR poster.
+        </p>
+      </div>
+
+      {errorMsg && (
+        <div
+          className="card"
+          style={{
+            borderColor: 'rgba(239, 68, 68, 0.3)',
+            background: 'rgba(239, 68, 68, 0.05)',
+            color: 'var(--danger)',
+            fontSize: '0.85rem',
+            padding: '0.85rem 1rem',
+            marginBottom: '1rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+          }}
+        >
+          <AlertCircle size={16} /> {errorMsg}
+        </div>
+      )}
+
+      {infoMsg && (
+        <div
+          className="card"
+          style={{
+            borderColor: 'rgba(16, 185, 129, 0.3)',
+            background: 'rgba(16, 185, 129, 0.05)',
+            color: 'var(--success)',
+            fontSize: '0.85rem',
+            padding: '0.85rem 1rem',
+            marginBottom: '1rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+          }}
+        >
+          <CheckCircle2 size={16} /> {infoMsg}
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="card" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        <div className="form-group">
+          <label className="form-label">Facility / Counter Name *</label>
+          <input
+            type="text"
+            placeholder="e.g. City Care Center - Room 102"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="input-field"
+            required
+          />
         </div>
 
-        {errorMsg && (
-          <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.3)', padding: '12px', borderRadius: '8px', fontSize: '0.85rem', color: '#ef4444', marginBottom: '16px', textAlign: 'center' }}>
-            {errorMsg}
-          </div>
-        )}
+        <div className="form-group">
+          <label className="form-label">Category</label>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            className="input-field"
+            style={{ appearance: 'auto' }}
+          >
+            <option value="Healthcare">Healthcare / Outpatient Clinic</option>
+            <option value="Laboratory">Diagnostic Pathology Lab</option>
+            <option value="Pharmacy">Hospital Pharmacy Counter</option>
+            <option value="Education">Campus / Student Desk</option>
+            <option value="Public Service">Public Service Counter</option>
+          </select>
+        </div>
 
-        {infoMsg && (
-          <div style={{ background: 'rgba(16, 185, 129, 0.15)', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '12px', borderRadius: '8px', fontSize: '0.85rem', color: '#10b981', marginBottom: '16px', textAlign: 'center' }}>
-            {infoMsg}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="card glass" style={{ padding: '24px', gap: '20px' }}>
-          <div>
-            <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary, #94a3b8)', display: 'block', marginBottom: '6px' }}>
-              Venue / Counter Name *
-            </label>
+        <div className="form-group">
+          <label className="form-label">Physical Address *</label>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
             <input
               type="text"
-              placeholder="e.g. Sarvodaya Clinic - Counter 1"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              style={{ width: '100%', padding: '12px 14px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: '#fff', outline: 'none' }}
+              placeholder="e.g. 100 Hospital Way, Medical District"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              onBlur={() => address && geocodeAddress(address)}
+              className="input-field"
+              style={{ flex: 1 }}
               required
             />
+            <button
+              type="button"
+              onClick={() => geocodeAddress(address)}
+              className="btn btn-secondary"
+              style={{ width: 'auto', padding: '0.65rem 1rem', fontSize: '0.825rem', whiteSpace: 'nowrap' }}
+              disabled={geocoding || !address.trim()}
+            >
+              <Search size={14} /> {geocoding ? 'Locating...' : 'Locate'}
+            </button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            border: '1px solid var(--border-default)',
+            background: 'var(--bg-page)',
+            borderRadius: 'var(--radius-md)',
+            padding: '1rem',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.85rem',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.825rem', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <MapPin size={15} color="var(--primary)" /> GPS Coordinates
+            </span>
+            <button
+              type="button"
+              onClick={handleGetCurrentLocation}
+              className="btn btn-secondary"
+              style={{ width: 'auto', padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}
+              disabled={loadingGps}
+            >
+              <Navigation size={13} /> {loadingGps ? 'Reading GPS...' : 'Detect My Location'}
+            </button>
           </div>
 
-          <div>
-            <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary, #94a3b8)', display: 'block', marginBottom: '6px' }}>
-              Category
-            </label>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+            <div>
+              <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.25rem' }}>Latitude</label>
+              <input
+                type="number"
+                step="any"
+                placeholder="12.9716"
+                value={lat}
+                onChange={(e) => setLat(e.target.value === '' ? '' : Number(e.target.value))}
+                className="input-field"
+                style={{ fontSize: '0.85rem', padding: '0.5rem 0.75rem' }}
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.25rem' }}>Longitude</label>
+              <input
+                type="number"
+                step="any"
+                placeholder="77.5946"
+                value={lng}
+                onChange={(e) => setLng(e.target.value === '' ? '' : Number(e.target.value))}
+                className="input-field"
+                style={{ fontSize: '0.85rem', padding: '0.5rem 0.75rem' }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+          <div className="form-group">
+            <label className="form-label">Geofence Radius</label>
             <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              style={{ width: '100%', padding: '12px 14px', background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: '#fff', outline: 'none' }}
+              value={radius}
+              onChange={(e) => setRadius(Number(e.target.value))}
+              className="input-field"
+              style={{ appearance: 'auto' }}
             >
-              <option value="Healthcare">Healthcare / Clinic</option>
-              <option value="Laboratory">Diagnostic Laboratory</option>
-              <option value="Pharmacy">Pharmacy Counter</option>
-              <option value="Education">Campus / College Desk</option>
-              <option value="Public Service">Government / Public Counter</option>
+              <option value={50}>50 meters (Room boundary)</option>
+              <option value={150}>150 meters (Standard clinic)</option>
+              <option value={300}>300 meters (Hospital campus)</option>
+              <option value={500}>500 meters (District zone)</option>
             </select>
           </div>
 
-          <div>
-            <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary, #94a3b8)', display: 'block', marginBottom: '6px' }}>
-              Physical Address *
-            </label>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <input
-                type="text"
-                placeholder="e.g. Main Road, Anavatti"
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                onBlur={() => address && geocodeAddress(address)}
-                style={{ flex: 1, padding: '12px 14px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: '#fff', outline: 'none' }}
-                required
-              />
-              <button
-                type="button"
-                onClick={() => geocodeAddress(address)}
-                className="btn btn-secondary"
-                style={{ width: 'auto', padding: '10px 14px', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
-                disabled={geocoding || !address.trim()}
-              >
-                {geocoding ? 'Finding...' : <><Search size={14} /> Find Lat/Lng</>}
-              </button>
-            </div>
+          <div className="form-group">
+            <label className="form-label">Pacing (Mins/Patient)</label>
+            <input
+              type="number"
+              min={1}
+              max={60}
+              value={avgServiceMins}
+              onChange={(e) => setAvgServiceMins(Number(e.target.value))}
+              className="input-field"
+              required
+            />
           </div>
+        </div>
 
-          <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px dashed rgba(255,255,255,0.1)', padding: '16px', borderRadius: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <MapPin size={16} color="#6366f1" /> GPS Coordinates
-              </span>
-              <button
-                type="button"
-                onClick={handleGetCurrentLocation}
-                className="btn btn-secondary"
-                style={{ width: 'auto', padding: '6px 12px', fontSize: '0.75rem', border: '1px solid rgba(99,102,241,0.4)', color: '#818cf8' }}
-                disabled={loadingGps}
-              >
-                {loadingGps ? 'Detecting GPS...' : <><Navigation size={14} /> Use My Location</>}
-              </button>
-            </div>
-
-            <div style={{ display: 'flex', gap: '12px' }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ fontSize: '0.75rem', color: '#94a3b8', display: 'block', marginBottom: '4px' }}>Latitude</label>
-                <input
-                  type="number"
-                  step="any"
-                  placeholder="e.g. 14.5492"
-                  value={lat}
-                  onChange={(e) => setLat(e.target.value === '' ? '' : Number(e.target.value))}
-                  style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: '#fff', fontSize: '0.85rem' }}
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <label style={{ fontSize: '0.75rem', color: '#94a3b8', display: 'block', marginBottom: '4px' }}>Longitude</label>
-                <input
-                  type="number"
-                  step="any"
-                  placeholder="e.g. 75.1481"
-                  value={lng}
-                  onChange={(e) => setLng(e.target.value === '' ? '' : Number(e.target.value))}
-                  style={{ width: '100%', padding: '10px', background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: '#fff', fontSize: '0.85rem' }}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', gap: '12px' }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary, #94a3b8)', display: 'block', marginBottom: '6px' }}>
-                Geofence Radius (m)
-              </label>
-              <select
-                value={radius}
-                onChange={(e) => setRadius(Number(e.target.value))}
-                style={{ width: '100%', padding: '12px 10px', background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: '#fff', fontSize: '0.85rem' }}
-              >
-                <option value={50}>50m (Strict Room)</option>
-                <option value={150}>150m (Standard Clinic)</option>
-                <option value={300}>300m (Hospital Building)</option>
-                <option value={500}>500m (Campus Wide)</option>
-              </select>
-            </div>
-
-            <div style={{ flex: 1 }}>
-              <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary, #94a3b8)', display: 'block', marginBottom: '6px' }}>
-                Avg Service Mins/pt
-              </label>
-              <input
-                type="number"
-                min={1}
-                max={60}
-                value={avgServiceMins}
-                onChange={(e) => setAvgServiceMins(Number(e.target.value))}
-                style={{ width: '100%', padding: '12px 10px', background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: '#fff', fontSize: '0.85rem' }}
-                required
-              />
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            className="btn btn-primary"
-            style={{ padding: '14px', fontSize: '1rem', marginTop: '8px', background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)' }}
-            disabled={submitting}
-          >
-            {submitting ? 'Saving Venue...' : 'Save Venue & Generate QR Poster 🚀'}
-          </button>
-        </form>
-      </div>
-    </>
+        <button
+          type="submit"
+          className="btn btn-primary"
+          style={{ padding: '0.75rem 1rem', fontSize: '0.95rem', marginTop: '0.5rem' }}
+          disabled={submitting}
+        >
+          {submitting ? 'Registering Facility...' : 'Register Facility & Generate Poster'}
+        </button>
+      </form>
+    </div>
   );
 }

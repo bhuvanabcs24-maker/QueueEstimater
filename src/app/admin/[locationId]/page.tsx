@@ -3,40 +3,31 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Users, QrCode, Play, CheckCircle2, RefreshCw, Stethoscope, ShieldCheck } from 'lucide-react';
-import { getVenueById, Venue, recordUserServed } from '@/lib/venueStore';
-
-interface PatientInQueue {
-  id: string;
-  ticketNumber: number;
-  name: string;
-  phone: string;
-  checkinTime: string;
-  gpsVerified: boolean;
-}
+import {
+  ArrowLeft,
+  Users,
+  QrCode,
+  Play,
+  CheckCircle2,
+  RefreshCw,
+  Stethoscope,
+  Bell,
+  Activity,
+} from 'lucide-react';
+import { getVenueById, Venue } from '@/lib/venueStore';
+import { useRealtimeQueue } from '@/lib/useRealtimeQueue';
 
 export default function AdminDashboardPage({ params }: { params: { locationId: string } }) {
   const { locationId } = params;
   const router = useRouter();
   const [venue, setVenue] = useState<Venue | null>(null);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const [queueList, setQueueList] = useState<PatientInQueue[]>([
-    { id: 'p1', ticketNumber: 101, name: 'Rahul Sharma', phone: '+91 98765 43210', checkinTime: '10:14 AM', gpsVerified: true },
-    { id: 'p2', ticketNumber: 102, name: 'Priya Patel', phone: '+91 98123 45678', checkinTime: '10:18 AM', gpsVerified: true },
-    { id: 'p3', ticketNumber: 103, name: 'Amit Kumar', phone: '+91 99887 76655', checkinTime: '10:22 AM', gpsVerified: true },
-    { id: 'p4', ticketNumber: 104, name: 'Ananya Roy', phone: '+91 97654 32109', checkinTime: '10:25 AM', gpsVerified: true },
-  ]);
+  // Connect to live real-time queue stream
+  const { venues, connected, lastEvent, dispatchAction } = useRealtimeQueue(locationId);
 
-  const [servingTicket, setServingTicket] = useState<PatientInQueue | null>({
-    id: 'p0',
-    ticketNumber: 100,
-    name: 'Suresh Verma',
-    phone: '+91 98989 89898',
-    checkinTime: '10:05 AM',
-    gpsVerified: true,
-  });
-
-  const [totalServed, setTotalServed] = useState(12);
+  const realtimeVenue = venues[locationId];
 
   useEffect(() => {
     // Check doctor authorization
@@ -50,158 +41,345 @@ export default function AdminDashboardPage({ params }: { params: { locationId: s
     setVenue(v);
   }, [locationId, router]);
 
-  const handleCallNextPatient = () => {
-    if (queueList.length > 0) {
-      const nextPatient = queueList[0];
-      setServingTicket(nextPatient);
-      setQueueList(queueList.slice(1));
-    } else {
-      setServingTicket(null);
+  // Show notification toast when events occur
+  useEffect(() => {
+    if (lastEvent && lastEvent.venueId === locationId) {
+      if (lastEvent.type === 'CHECK_IN') {
+        const pt = lastEvent.payload?.newPatient as { ticketNumber?: number; name?: string } | undefined;
+        if (pt) {
+          setToastMessage(`New Patient Registered: Token #${pt.ticketNumber} (${pt.name})`);
+          const timer = setTimeout(() => setToastMessage(null), 4000);
+          return () => clearTimeout(timer);
+        }
+      } else if (lastEvent.type === 'CANCEL') {
+        const pt = lastEvent.payload?.cancelledPatient as { ticketNumber?: number; name?: string } | undefined;
+        if (pt) {
+          setToastMessage(`Patient Cancelled Token #${pt.ticketNumber}`);
+          const timer = setTimeout(() => setToastMessage(null), 3000);
+          return () => clearTimeout(timer);
+        }
+      }
+    }
+  }, [lastEvent, locationId]);
+
+  const queueList = realtimeVenue ? realtimeVenue.queueList : [];
+  const servingTicket = realtimeVenue ? realtimeVenue.servingTicket : null;
+  const totalServed = realtimeVenue ? realtimeVenue.totalServed : (venue?.total_served || 12);
+  const avgServiceMins = realtimeVenue ? realtimeVenue.avgServiceTimeMinutes : (venue?.avg_service_time_minutes || 8);
+
+  const handleCallNextPatient = async () => {
+    setActionLoading(true);
+    try {
+      await dispatchAction('CALL_NEXT', locationId);
+    } catch (e) {
+      console.error('Call next error:', e);
+    } finally {
+      setActionLoading(false);
     }
   };
 
-  const handleCompleteConsultation = () => {
-    if (servingTicket) {
-      setTotalServed((prev) => prev + 1);
-      // Record service completion to recalculate wait times dynamically
-      recordUserServed(locationId, venue?.avg_service_time_minutes || 8);
-      handleCallNextPatient();
+  const handleCompleteConsultation = async () => {
+    if (!servingTicket && queueList.length === 0) return;
+    setActionLoading(true);
+    try {
+      await dispatchAction('COMPLETE', locationId, {
+        actualDurationMinutes: avgServiceMins,
+      });
+    } catch (e) {
+      console.error('Complete error:', e);
+    } finally {
+      setActionLoading(false);
     }
   };
 
-  const handleResetQueue = () => {
-    if (confirm('Are you sure you want to reset the queue counter for today?')) {
-      setQueueList([]);
-      setServingTicket(null);
+  const handleResetQueue = async () => {
+    if (confirm('Are you sure you want to reset the waiting queue counter for this session?')) {
+      setActionLoading(true);
+      try {
+        await dispatchAction('RESET', locationId);
+      } catch (e) {
+        console.error('Reset error:', e);
+      } finally {
+        setActionLoading(false);
+      }
     }
   };
 
   if (!venue) {
-    return <div style={{ padding: '40px', textAlign: 'center', color: '#fff' }}>Loading Doctor Dashboard...</div>;
+    return (
+      <div className="page-container" style={{ alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+        <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
+          <Activity size={32} className="pulse" color="#3b82f6" style={{ margin: '0 auto 12px auto' }} />
+          <div>Loading clinical triage workstation...</div>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '600px', margin: '0 auto' }}>
-      {/* Top Header Bar */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Link href="/" style={{ color: 'var(--text-secondary, #94a3b8)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}>
-          <ArrowLeft size={16} /> Exit Portal
-        </Link>
-        <span style={{ fontSize: '0.75rem', background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8', border: '1px solid rgba(99, 102, 241, 0.3)', padding: '4px 10px', borderRadius: '9999px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}>
-          <Stethoscope size={14} /> DOCTOR PORTAL
-        </span>
-      </div>
-
-      {/* Clinic Header */}
-      <div className="card glass" style={{ padding: '20px', gap: '8px' }}>
-        <h1 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#fff' }}>{venue.name}</h1>
-        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary, #94a3b8)' }}>
-          {venue.category} • {venue.address}
-        </p>
-        <div style={{ display: 'flex', gap: '16px', marginTop: '8px', paddingTop: '12px', borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: '0.8rem', color: '#cbd5e1' }}>
-          <span>⏱️ Avg Time: <strong>{venue.avg_service_time_minutes} mins/pt</strong></span>
-          <span>✅ Total Served Today: <strong>{totalServed} patients</strong></span>
-        </div>
-      </div>
-
-      {/* Currently Serving Box */}
-      <div className="card glass" style={{ padding: '24px', border: '1px solid rgba(16, 185, 129, 0.3)', background: 'rgba(16, 185, 129, 0.08)', textAlign: 'center' }}>
-        <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#10b981', letterSpacing: '0.05em', textTransform: 'uppercase', display: 'block', marginBottom: '8px' }}>
-          🟢 CURRENTLY IN CONSULTATION ROOM
-        </span>
-
-        {servingTicket ? (
-          <div>
-            <div style={{ fontSize: '3.2rem', fontWeight: 900, color: '#fff', letterSpacing: '-0.02em' }}>
-              #{servingTicket.ticketNumber}
-            </div>
-            <b style={{ fontSize: '1.1rem', color: '#10b981', display: 'block' }}>{servingTicket.name}</b>
-            <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>{servingTicket.phone} • Arrived {servingTicket.checkinTime}</span>
-          </div>
-        ) : (
-          <div style={{ fontSize: '1.2rem', color: '#94a3b8', padding: '16px 0' }}>No patient currently in room</div>
-        )}
-
-        <div style={{ display: 'flex', gap: '10px', marginTop: '16px' }}>
-          <button
-            onClick={handleCompleteConsultation}
-            className="btn btn-primary"
-            style={{ flex: 1, padding: '14px', background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', boxShadow: '0 6px 20px rgba(16, 185, 129, 0.3)' }}
-          >
-            <CheckCircle2 size={18} /> Complete & Call Next
-          </button>
-          <button
-            onClick={handleCallNextPatient}
-            className="btn btn-secondary"
-            style={{ flex: 1, padding: '14px' }}
-          >
-            <Play size={18} /> Skip / Call Next
-          </button>
-        </div>
-      </div>
-
-      {/* Patient Waiting Queue List */}
-      <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-          <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <Users size={16} color="#6366f1" /> Waiting Patient Queue ({queueList.length})
-          </h3>
-          <span style={{ fontSize: '0.75rem', color: '#10b981' }}>~{queueList.length * (venue.avg_service_time_minutes || 8)} min total wait</span>
-        </div>
-
-        {queueList.length === 0 ? (
-          <div className="card glass" style={{ padding: '24px', textAlign: 'center', color: '#94a3b8', fontSize: '0.85rem' }}>
-            No patients currently waiting in line.
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {queueList.map((pt, idx) => (
-              <div
-                key={pt.id}
-                className="card glass"
-                style={{
-                  padding: '14px 16px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  background: idx === 0 ? 'rgba(99, 102, 241, 0.12)' : 'rgba(255,255,255,0.03)',
-                  border: idx === 0 ? '1px solid rgba(99, 102, 241, 0.3)' : '1px solid rgba(255,255,255,0.06)',
-                }}
-              >
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <b style={{ fontSize: '1rem', color: '#fff' }}>#{pt.ticketNumber}</b>
-                    <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#cbd5e1' }}>{pt.name}</span>
-                    {idx === 0 && <span style={{ fontSize: '0.65rem', background: '#6366f1', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontWeight: 700 }}>NEXT IN LINE</span>}
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '2px' }}>
-                    {pt.phone} • Checked in at {pt.checkinTime}
-                  </div>
-                </div>
-
-                <span style={{ fontSize: '0.7rem', padding: '3px 8px', borderRadius: '9999px', background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <ShieldCheck size={12} /> GPS Verified
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Doctor Action Controls */}
-      <div className="card glass" style={{ padding: '16px', gap: '12px' }}>
-        <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Doctor Management Controls
-        </h4>
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <Link href={`/location/${locationId}/qr`} className="btn btn-secondary" style={{ flex: 1, padding: '10px', fontSize: '0.8rem', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
-            <QrCode size={16} /> Print QR Poster
+    <>
+      {/* Top Workstation Header */}
+      <header className="app-header">
+        <div className="header-container">
+          <Link href="/" className="brand-link">
+            <ArrowLeft size={18} />
+            <span>Exit Workstation</span>
           </Link>
-          <button onClick={handleResetQueue} className="btn btn-secondary" style={{ flex: 1, padding: '10px', fontSize: '0.8rem', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
-            <RefreshCw size={16} /> Reset Queue
-          </button>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span
+              style={{
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                padding: '4px 10px',
+                borderRadius: 'var(--radius-pill)',
+                backgroundColor: connected ? 'var(--status-success-bg)' : 'var(--status-warning-bg)',
+                border: `1px solid ${connected ? 'var(--status-success-border)' : 'var(--status-warning-border)'}`,
+                color: connected ? 'var(--status-success)' : 'var(--status-warning)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+              }}
+            >
+              <span
+                style={{
+                  width: '6px',
+                  height: '6px',
+                  borderRadius: '50%',
+                  backgroundColor: connected ? 'var(--status-success)' : 'var(--status-warning)',
+                }}
+                className={connected ? 'pulse' : ''}
+              />
+              {connected ? 'Live Station Sync' : 'Connecting'}
+            </span>
+
+            <span
+              style={{
+                fontSize: '0.78rem',
+                fontWeight: 600,
+                padding: '4px 10px',
+                borderRadius: 'var(--radius-pill)',
+                backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                border: '1px solid rgba(37, 99, 235, 0.3)',
+                color: '#60a5fa',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+              }}
+            >
+              <Stethoscope size={13} />
+              Staff Station
+            </span>
+          </div>
         </div>
-      </div>
-    </div>
+      </header>
+
+      {/* Main Workstation Container */}
+      <main className="page-container" style={{ maxWidth: '840px' }}>
+        {/* Toast Alert */}
+        {toastMessage && (
+          <div className="alert-banner alert-banner-info">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Bell size={16} />
+              <span>{toastMessage}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Facility Info Card */}
+        <div className="card" style={{ padding: '20px 24px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px' }}>
+            <div>
+              <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                Assigned Facility
+              </span>
+              <h1 style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--text-primary)', marginTop: '2px' }}>
+                {venue.name}
+              </h1>
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                {venue.category} • {venue.address}
+              </p>
+            </div>
+
+            <div style={{ display: 'flex', gap: '16px', backgroundColor: 'var(--bg-surface-elevated)', padding: '10px 16px', borderRadius: 'var(--radius-md)' }}>
+              <div>
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block' }}>Avg Service Time</span>
+                <strong style={{ fontSize: '1.05rem', color: 'var(--text-primary)' }}>{avgServiceMins} min/pt</strong>
+              </div>
+              <div style={{ width: '1px', backgroundColor: 'var(--border-default)' }} />
+              <div>
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block' }}>Total Attended</span>
+                <strong style={{ fontSize: '1.05rem', color: 'var(--text-primary)' }}>{totalServed} patients</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Now Serving / Consultation Desk Card */}
+        <div
+          className="card"
+          style={{
+            padding: '24px',
+            backgroundColor: servingTicket ? 'rgba(16, 185, 129, 0.04)' : 'var(--bg-surface)',
+            borderColor: servingTicket ? 'var(--status-success-border)' : 'var(--border-default)',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.78rem', fontWeight: 700, color: servingTicket ? 'var(--status-success)' : 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Consultation Room Status
+            </span>
+            {servingTicket && (
+              <span className="badge badge-success">Active Session</span>
+            )}
+          </div>
+
+          <div style={{ padding: '16px 0', textAlign: 'center' }}>
+            {servingTicket ? (
+              <div>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block' }}>
+                  Current Patient Token
+                </span>
+                <div style={{ fontSize: '3.5rem', fontWeight: 800, color: '#ffffff', letterSpacing: '-0.02em', lineHeight: 1, margin: '6px 0' }}>
+                  #{servingTicket.ticketNumber}
+                </div>
+                <div style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  {servingTicket.name}
+                </div>
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                  {servingTicket.phone} • Arrived at {servingTicket.checkinTime}
+                </div>
+              </div>
+            ) : (
+              <div style={{ padding: '24px 0', color: 'var(--text-muted)', fontSize: '0.92rem' }}>
+                Consultation room is currently vacant. Click below to call the next patient.
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button
+              onClick={handleCompleteConsultation}
+              className="btn btn-success"
+              style={{ flex: 1, padding: '12px' }}
+              disabled={actionLoading || (!servingTicket && queueList.length === 0)}
+            >
+              <CheckCircle2 size={16} />
+              <span>{actionLoading ? 'Updating...' : 'Complete & Call Next'}</span>
+            </button>
+
+            <button
+              onClick={handleCallNextPatient}
+              className="btn btn-secondary"
+              style={{ flex: 1, padding: '12px' }}
+              disabled={actionLoading || queueList.length === 0}
+            >
+              <Play size={16} />
+              <span>{actionLoading ? 'Calling...' : 'Skip / Call Next'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Patient Waiting Queue List */}
+        <div className="card" style={{ padding: '20px 24px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h2 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Users size={16} color="#60a5fa" />
+              <span>Waiting Patient Queue ({queueList.length})</span>
+            </h2>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              Est. Queue Duration: ~{queueList.length * avgServiceMins} mins
+            </span>
+          </div>
+
+          {queueList.length === 0 ? (
+            <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.88rem' }}>
+              No patients currently waiting in line. New check-ins will appear here in real time.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {queueList.map((pt, idx) => (
+                <div
+                  key={pt.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '12px 16px',
+                    backgroundColor: idx === 0 ? 'var(--bg-surface-elevated)' : 'transparent',
+                    border: '1px solid',
+                    borderColor: idx === 0 ? 'var(--brand-primary-subtle)' : 'var(--border-subtle)',
+                    borderRadius: 'var(--radius-md)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <div
+                      style={{
+                        width: '38px',
+                        height: '38px',
+                        borderRadius: 'var(--radius-sm)',
+                        backgroundColor: idx === 0 ? 'var(--brand-primary)' : 'var(--bg-surface-subtle)',
+                        color: idx === 0 ? '#ffffff' : 'var(--text-primary)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontWeight: 700,
+                        fontSize: '0.9rem',
+                      }}
+                    >
+                      #{pt.ticketNumber}
+                    </div>
+
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.92rem' }}>
+                          {pt.name}
+                        </span>
+                        {idx === 0 && (
+                          <span className="badge badge-warning" style={{ fontSize: '0.68rem', padding: '2px 6px' }}>
+                            Next in Line
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        {pt.phone} • Registered at {pt.checkinTime} • Est. wait: ~{pt.estimatedWaitMinutes || (idx + 1) * avgServiceMins}m
+                      </div>
+                    </div>
+                  </div>
+
+                  <span className="badge badge-neutral" style={{ fontSize: '0.72rem' }}>
+                    {pt.gpsVerified ? 'GPS Verified' : 'QR Scan'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Management Controls Card */}
+        <div className="card" style={{ padding: '16px 24px', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>Station Administration</div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Print physical desk posters or reset queue counts.</div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <Link href={`/location/${locationId}/qr`} className="btn btn-secondary" style={{ padding: '8px 14px', fontSize: '0.82rem' }}>
+              <QrCode size={14} />
+              <span>Print QR Poster</span>
+            </Link>
+
+            <button
+              onClick={handleResetQueue}
+              className="btn btn-outline-danger"
+              disabled={actionLoading}
+              style={{ padding: '8px 14px', fontSize: '0.82rem' }}
+            >
+              <RefreshCw size={14} />
+              <span>Reset Counter</span>
+            </button>
+          </div>
+        </div>
+      </main>
+    </>
   );
 }

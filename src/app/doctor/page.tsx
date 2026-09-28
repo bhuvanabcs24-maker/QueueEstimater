@@ -1,18 +1,30 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Stethoscope, Lock, ArrowRight, ShieldCheck, ArrowLeft } from 'lucide-react';
-import { getAllVenues, Venue } from '@/lib/venueStore';
+import { Stethoscope, Lock, ArrowRight, ShieldCheck, ArrowLeft, MessageSquare, RefreshCw, KeyRound } from 'lucide-react';
+import { getAllVenues, syncVenuesFromDatabase, Venue } from '@/lib/venueStore';
 
 export default function DoctorLoginPage() {
   const router = useRouter();
   const [venues, setVenues] = useState<Venue[]>([]);
   const [selectedVenueId, setSelectedVenueId] = useState('');
+  const [authMethod, setAuthMethod] = useState<'otp' | 'passcode'>('otp');
+
+  // OTP state
+  const [phone, setPhone] = useState('917624843107');
+  const [otp, setOtp] = useState('');
+  const [otpStep, setOtpStep] = useState<'phone' | 'code'>('phone');
+  const [countdown, setCountdown] = useState(0);
+
+  // Passcode state
   const [passcode, setPasscode] = useState('');
+
   const [error, setError] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
   const [loading, setLoading] = useState(false);
+  const otpInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const list = getAllVenues();
@@ -20,21 +32,116 @@ export default function DoctorLoginPage() {
     if (list.length > 0) {
       setSelectedVenueId(list[0].id);
     }
+
+    // Sync real database venues
+    syncVenuesFromDatabase().then((dbList) => {
+      if (dbList && dbList.length > 0) {
+        setVenues(dbList);
+        setSelectedVenueId((prev) => prev || dbList[0].id);
+      }
+    });
   }, []);
 
-  const handleDoctorLogin = (e: React.FormEvent) => {
+  useEffect(() => {
+    if (otpStep === 'code' && otpInputRef.current) {
+      otpInputRef.current.focus();
+    }
+  }, [otpStep]);
+
+  useEffect(() => {
+    if (countdown > 0) {
+      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [countdown]);
+
+  const handleSendDoctorOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!phone.trim()) return;
+
+    setLoading(true);
+    setError('');
+    setSuccessMsg('');
+
+    try {
+      const res = await fetch('/api/auth/send-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: phone.trim(), role: 'doctor' }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to dispatch Doctor SMS verification code.');
+      }
+
+      setOtpStep('code');
+      setCountdown(60);
+      setSuccessMsg(`Verification code sent via SMS to +${data.phone}`);
+    } catch (err: unknown) {
+      console.error('Doctor OTP Send error:', err);
+      const message = err instanceof Error ? err.message : 'Failed to send OTP code.';
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyDoctorOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!otp.trim()) return;
+
+    if (!selectedVenueId) {
+      setError('Please select your clinic or department.');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    try {
+      const res = await fetch('/api/auth/verify-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: phone.trim(),
+          code: otp.trim(),
+          role: 'doctor',
+          venueId: selectedVenueId,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Invalid doctor verification code.');
+      }
+
+      sessionStorage.setItem(`doctor_auth_${selectedVenueId}`, 'true');
+      sessionStorage.setItem('doctor_phone', data.user.phone);
+      router.push(`/admin/${selectedVenueId}`);
+    } catch (err: unknown) {
+      console.error('Doctor OTP verification error:', err);
+      const message = err instanceof Error ? err.message : 'Verification failed.';
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePasscodeLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
     if (!selectedVenueId) {
-      setError('Please select your clinic or venue.');
+      setError('Please select your clinic or department.');
       return;
     }
 
-    // Special doctor access passcode (Default PIN: 7788 or DOCTOR123)
     const validPasscodes = ['7788', 'DOCTOR123', 'DOC2026', '1234'];
     if (!validPasscodes.includes(passcode.trim())) {
-      setError('Invalid Doctor Special Passcode. Try passcode: 7788');
+      setError('Invalid Doctor Passcode. Try PIN: 7788');
       return;
     }
 
@@ -42,117 +149,283 @@ export default function DoctorLoginPage() {
     setTimeout(() => {
       sessionStorage.setItem(`doctor_auth_${selectedVenueId}`, 'true');
       router.push(`/admin/${selectedVenueId}`);
-    }, 600);
+    }, 400);
   };
 
   return (
-    <div className="app-content" style={{ justifyContent: 'center', minHeight: '80vh', padding: '16px' }}>
-      <div className="card glass" style={{ padding: '32px 24px', gap: '24px', maxWidth: '440px', margin: '0 auto', width: '100%' }}>
-        <div style={{ textAlign: 'center' }}>
-          <div
-            style={{
-              width: '56px',
-              height: '56px',
-              borderRadius: '50%',
-              background: 'rgba(99, 102, 241, 0.2)',
-              border: '1px solid rgba(99, 102, 241, 0.4)',
-              margin: '0 auto 16px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#6366f1',
-            }}
-          >
-            <Stethoscope size={30} />
-          </div>
-          <h1 style={{ fontSize: '1.6rem', fontWeight: 800, marginBottom: '6px' }}>
-            Doctor & Staff Portal
-          </h1>
-          <p style={{ color: 'var(--text-secondary, #94a3b8)', fontSize: '0.85rem', lineHeight: '1.4' }}>
-            Enter your special passcode to manage patient queues, call next numbers, and adjust service times.
-          </p>
+    <>
+      <header className="app-header">
+        <div className="header-container">
+          <Link href="/" className="brand-link">
+            <ArrowLeft size={18} />
+            <span>CareQueue Directory</span>
+          </Link>
+          <span className="badge badge-neutral">Staff Workstation</span>
         </div>
+      </header>
 
-        <div style={{ background: 'rgba(99, 102, 241, 0.1)', border: '1px solid rgba(99, 102, 241, 0.25)', padding: '12px', borderRadius: '8px', fontSize: '0.8rem', color: '#818cf8', textAlign: 'center' }}>
-          🔑 <strong>Default Passcode PIN:</strong> <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.95rem', color: '#fff' }}>7788</span>
-        </div>
-
-        {error && (
-          <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.3)', padding: '12px', borderRadius: '8px', fontSize: '0.85rem', color: '#ef4444', textAlign: 'center' }}>
-            {error}
-          </div>
-        )}
-
-        <form onSubmit={handleDoctorLogin} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div>
-            <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary, #94a3b8)', display: 'block', marginBottom: '6px' }}>
-              Select Clinic / Venue *
-            </label>
-            <select
-              value={selectedVenueId}
-              onChange={(e) => setSelectedVenueId(e.target.value)}
+      <main className="page-container" style={{ alignItems: 'center', justifyContent: 'center', minHeight: '75vh' }}>
+        <div className="card" style={{ maxWidth: '440px', width: '100%', padding: '32px 28px' }}>
+          <div style={{ textAlign: 'center' }}>
+            <div
               style={{
-                width: '100%',
-                padding: '12px 14px',
-                background: '#0f172a',
-                border: '1px solid rgba(255,255,255,0.1)',
-                borderRadius: '8px',
-                color: '#fff',
-                fontSize: '0.9rem',
-                outline: 'none',
+                width: '48px',
+                height: '48px',
+                borderRadius: 'var(--radius-md)',
+                backgroundColor: 'rgba(37, 99, 235, 0.12)',
+                border: '1px solid rgba(37, 99, 235, 0.25)',
+                color: '#60a5fa',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 12px auto',
               }}
-              required
             >
-              {venues.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.name} ({v.category})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary, #94a3b8)', display: 'block', marginBottom: '6px' }}>
-              Doctor Special Passcode *
-            </label>
-            <div style={{ position: 'relative' }}>
-              <input
-                type="password"
-                placeholder="Enter passcode (e.g. 7788)"
-                value={passcode}
-                onChange={(e) => setPasscode(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '12px 14px 12px 40px',
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  borderRadius: '8px',
-                  color: '#fff',
-                  fontSize: '1rem',
-                  letterSpacing: '0.1em',
-                  outline: 'none',
-                }}
-                disabled={loading}
-                required
-              />
-              <Lock size={18} color="#94a3b8" style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)' }} />
+              <Stethoscope size={24} />
             </div>
+            <h1 style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+              Medical Staff Portal
+            </h1>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: '4px' }}>
+              Authenticate to manage live patient queues and triage numbers.
+            </p>
           </div>
 
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <Link href="/" className="btn btn-secondary" style={{ flex: 1, padding: '12px', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <ArrowLeft size={16} /> Back
-            </Link>
-            <button type="submit" className="btn btn-primary" style={{ flex: 2, padding: '12px' }} disabled={loading}>
-              {loading ? 'Authenticating...' : 'Access Doctor Dashboard'} <ArrowRight size={18} />
+          {/* Department Selection */}
+          <div className="form-group" style={{ marginTop: '8px' }}>
+            <label className="form-label" htmlFor="clinic-select">Select Department / Counter</label>
+            {venues.length > 0 ? (
+              <select
+                id="clinic-select"
+                value={selectedVenueId}
+                onChange={(e) => setSelectedVenueId(e.target.value)}
+                className="input-field"
+                required
+              >
+                {venues.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name} ({v.category})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div
+                style={{
+                  padding: '12px',
+                  borderRadius: 'var(--radius-md)',
+                  background: 'rgba(245, 158, 11, 0.08)',
+                  border: '1px solid rgba(245, 158, 11, 0.25)',
+                  fontSize: '0.8rem',
+                  color: 'var(--warning)',
+                  lineHeight: 1.4,
+                }}
+              >
+                No facilities registered in the database yet.{' '}
+                <Link href="/venue/register" style={{ color: 'var(--primary)', fontWeight: 600, textDecoration: 'underline' }}>
+                  Register your facility first →
+                </Link>
+              </div>
+            )}
+          </div>
+
+          {/* Method Tabs */}
+          <div style={{ display: 'flex', backgroundColor: 'var(--bg-surface-elevated)', borderRadius: 'var(--radius-md)', padding: '3px' }}>
+            <button
+              type="button"
+              onClick={() => { setAuthMethod('otp'); setError(''); }}
+              style={{
+                flex: 1,
+                padding: '8px',
+                border: 'none',
+                borderRadius: 'var(--radius-sm)',
+                backgroundColor: authMethod === 'otp' ? 'var(--brand-primary)' : 'transparent',
+                color: authMethod === 'otp' ? '#ffffff' : 'var(--text-secondary)',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '5px',
+              }}
+            >
+              <MessageSquare size={13} />
+              <span>SMS OTP</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setAuthMethod('passcode'); setError(''); }}
+              style={{
+                flex: 1,
+                padding: '8px',
+                border: 'none',
+                borderRadius: 'var(--radius-sm)',
+                backgroundColor: authMethod === 'passcode' ? 'var(--brand-primary)' : 'transparent',
+                color: authMethod === 'passcode' ? '#ffffff' : 'var(--text-secondary)',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '5px',
+              }}
+            >
+              <KeyRound size={13} />
+              <span>Passcode PIN</span>
             </button>
           </div>
-        </form>
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', color: 'var(--text-secondary, #94a3b8)', fontSize: '0.75rem' }}>
-          <ShieldCheck size={14} color="#10b981" /> Restrictive Doctor Passcode Gate
+          {successMsg && (
+            <div className="alert-banner alert-banner-info">
+              <span>{successMsg}</span>
+            </div>
+          )}
+
+          {error && (
+            <div className="alert-banner alert-banner-error">
+              <span>{error}</span>
+            </div>
+          )}
+
+          {/* Method 1: Real-time SMS OTP */}
+          {authMethod === 'otp' && (
+            <div>
+              {otpStep === 'phone' ? (
+                <form onSubmit={handleSendDoctorOtp} className="form-group" style={{ gap: '14px' }}>
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="doctor-phone">Registered Mobile Number</label>
+                    <input
+                      id="doctor-phone"
+                      type="tel"
+                      placeholder="e.g. 917624843107"
+                      className="input-field"
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      disabled={loading}
+                      required
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={loading || !phone.trim()}
+                  >
+                    <span>{loading ? 'Dispatching SMS...' : 'Send Verification SMS'}</span>
+                    <ArrowRight size={15} />
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleVerifyDoctorOtp} className="form-group" style={{ gap: '14px' }}>
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="doctor-otp">Enter 4-Digit Verification Code</label>
+                    <input
+                      ref={otpInputRef}
+                      id="doctor-otp"
+                      type="text"
+                      maxLength={4}
+                      inputMode="numeric"
+                      placeholder="• • • •"
+                      className="input-field"
+                      style={{ textAlign: 'center', fontSize: '1.6rem', letterSpacing: '0.3em', fontWeight: 700 }}
+                      value={otp}
+                      onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+                      disabled={loading}
+                      required
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.78rem' }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      {countdown > 0 ? `Resend in ${countdown}s` : "Didn't receive SMS?"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleSendDoctorOtp}
+                      disabled={loading || countdown > 0}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: countdown > 0 ? 'var(--text-muted)' : 'var(--brand-primary)',
+                        cursor: countdown > 0 ? 'default' : 'pointer',
+                        fontWeight: 600,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                      }}
+                    >
+                      <RefreshCw size={12} /> Resend
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{ flex: 1 }}
+                      onClick={() => { setOtpStep('phone'); setOtp(''); setError(''); }}
+                      disabled={loading}
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="submit"
+                      className="btn btn-primary"
+                      style={{ flex: 2 }}
+                      disabled={loading || otp.length !== 4}
+                    >
+                      <span>{loading ? 'Verifying...' : 'Access Station'}</span>
+                      <ArrowRight size={15} />
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          )}
+
+          {/* Method 2: Passcode PIN */}
+          {authMethod === 'passcode' && (
+            <form onSubmit={handlePasscodeLogin} className="form-group" style={{ gap: '14px' }}>
+              <div className="form-group">
+                <label className="form-label" htmlFor="passcode-input">Staff Passcode PIN</label>
+                <div style={{ position: 'relative' }}>
+                  <Lock
+                    size={16}
+                    color="#64748b"
+                    style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)' }}
+                  />
+                  <input
+                    id="passcode-input"
+                    type="password"
+                    placeholder="Enter PIN (e.g. 7788)"
+                    className="input-field"
+                    style={{ paddingLeft: '38px' }}
+                    value={passcode}
+                    onChange={(e) => setPasscode(e.target.value)}
+                    disabled={loading}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                Default department access PIN: <strong style={{ color: 'var(--text-primary)' }}>7788</strong>
+              </div>
+
+              <button type="submit" className="btn btn-primary" disabled={loading}>
+                <span>{loading ? 'Authenticating...' : 'Access Staff Station'}</span>
+                <ArrowRight size={15} />
+              </button>
+            </form>
+          )}
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px', color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '6px' }}>
+            <ShieldCheck size={14} color="#10b981" />
+            <span>Authorized Medical Personnel Gate</span>
+          </div>
         </div>
-      </div>
-    </div>
+      </main>
+    </>
   );
 }

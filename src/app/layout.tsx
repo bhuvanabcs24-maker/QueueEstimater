@@ -3,13 +3,13 @@ import './globals.css';
 import PwaRegister from '../components/PwaRegister';
 
 export const metadata: Metadata = {
-  title: 'QWait Estimator - Realtime Queue Wait Times',
-  description: 'Know your queue wait time and check in instantly. Works at clinic sites via QR scanner + GPS geofencing.',
+  title: 'CareQueue | Healthcare Wait-Time & Patient Triage System',
+  description: 'Enterprise outpatient queue estimation, on-site GPS check-in, and real-time patient queue monitoring.',
   manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
-    statusBarStyle: 'black-translucent',
-    title: 'QWait',
+    statusBarStyle: 'default',
+    title: 'CareQueue',
   },
   icons: {
     icon: '/icons/icon-192.png',
@@ -18,11 +18,9 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: '#0d0f12',
+  themeColor: '#0b0f19',
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
 };
 
 export default function RootLayout({
