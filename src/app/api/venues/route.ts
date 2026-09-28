@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getAllVenuesState, upsertVenueRegistration } from '@/lib/realtimeStore';
+import { getAllVenuesState, upsertVenueRegistration, deleteVenueState } from '@/lib/realtimeStore';
 import { getSupabaseAdmin } from '@/lib/supabase';
 
 export async function GET() {
@@ -137,3 +137,36 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
+
+export async function DELETE(request: Request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get('id');
+
+    if (!id) {
+      return NextResponse.json({ error: 'Missing venue id parameter' }, { status: 400 });
+    }
+
+    // 1. Delete from realtime store and disk
+    deleteVenueState(id);
+
+    // 2. Best-effort delete from Supabase
+    const supabaseAdmin = getSupabaseAdmin();
+    if (supabaseAdmin) {
+      try {
+        await Promise.race([
+          supabaseAdmin.from('locations').delete().eq('id', id),
+          new Promise((resolve) => setTimeout(resolve, 1500)),
+        ]);
+      } catch (err) {
+        console.warn('Supabase delete notice:', err);
+      }
+    }
+
+    return NextResponse.json({ success: true, deletedId: id });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Failed to delete venue';
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+

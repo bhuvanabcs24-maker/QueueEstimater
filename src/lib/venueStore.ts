@@ -233,3 +233,28 @@ export function recordUserServed(locationId: string, durationMinutes: number) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(venues));
   }
 }
+
+export async function deleteVenue(id: string): Promise<boolean> {
+  if (typeof window !== 'undefined') {
+    const list = getAllVenues().filter((v) => v.id !== id);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+
+    try {
+      await fetch(`/api/venues?id=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+    } catch (err) {
+      console.warn('Delete venue API notice:', err);
+    }
+  }
+
+  if (isSupabaseConfigured) {
+    try {
+      supabase.from('locations').delete().eq('id', id).then(() => {});
+    } catch {
+      // Ignore
+    }
+  }
+
+  return true;
+}

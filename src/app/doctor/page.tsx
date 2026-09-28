@@ -3,8 +3,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Stethoscope, Lock, ArrowRight, ShieldCheck, ArrowLeft, MessageSquare, RefreshCw, KeyRound } from 'lucide-react';
-import { getAllVenues, syncVenuesFromDatabase, Venue } from '@/lib/venueStore';
+import { Stethoscope, Lock, ArrowRight, ShieldCheck, ArrowLeft, MessageSquare, RefreshCw, KeyRound, Trash2 } from 'lucide-react';
+import { getAllVenues, syncVenuesFromDatabase, deleteVenue, Venue } from '@/lib/venueStore';
 
 export default function DoctorLoginPage() {
   const router = useRouter();
@@ -195,19 +195,55 @@ export default function DoctorLoginPage() {
           <div className="form-group" style={{ marginTop: '8px' }}>
             <label className="form-label" htmlFor="clinic-select">Select Department / Counter</label>
             {venues.length > 0 ? (
-              <select
-                id="clinic-select"
-                value={selectedVenueId}
-                onChange={(e) => setSelectedVenueId(e.target.value)}
-                className="input-field"
-                required
-              >
-                {venues.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name} ({v.category})
-                  </option>
-                ))}
-              </select>
+              <>
+                <select
+                  id="clinic-select"
+                  value={selectedVenueId}
+                  onChange={(e) => setSelectedVenueId(e.target.value)}
+                  className="input-field"
+                  required
+                >
+                  {venues.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name} ({v.category})
+                    </option>
+                  ))}
+                </select>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                    ID: <code style={{ fontFamily: 'monospace' }}>{selectedVenueId}</code>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const targetVenue = venues.find((v) => v.id === selectedVenueId);
+                      if (!targetVenue) return;
+                      const ok = window.confirm(`Permanently delete "${targetVenue.name}"?\n\nThis will remove the facility from all directories and clear queue data.`);
+                      if (!ok) return;
+                      await deleteVenue(targetVenue.id);
+                      const updated = venues.filter((v) => v.id !== targetVenue.id);
+                      setVenues(updated);
+                      if (updated.length > 0) setSelectedVenueId(updated[0].id);
+                      else setSelectedVenueId('');
+                    }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--status-danger, #ef4444)',
+                      fontSize: '0.74rem',
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      padding: '2px 4px',
+                    }}
+                    title="Delete this facility"
+                  >
+                    <Trash2 size={12} />
+                    <span>Delete Facility</span>
+                  </button>
+                </div>
+              </>
             ) : (
               <div
                 style={{

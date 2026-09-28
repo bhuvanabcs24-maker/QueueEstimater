@@ -364,3 +364,20 @@ export function upsertVenueRegistration(venue: {
 
   return state;
 }
+
+export function deleteVenueState(venueId: string): boolean {
+  const store = getStore();
+  if (store[venueId]) {
+    delete store[venueId];
+    saveStoreToFile(store);
+
+    broadcastRealtimeEvent({
+      type: 'RESET',
+      venueId,
+      payload: { deleted: true },
+      timestamp: new Date().toISOString(),
+    });
+    return true;
+  }
+  return false;
+}

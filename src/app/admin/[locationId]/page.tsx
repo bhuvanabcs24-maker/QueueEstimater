@@ -13,8 +13,9 @@ import {
   Stethoscope,
   Bell,
   Activity,
+  Trash2,
 } from 'lucide-react';
-import { getVenueById, Venue } from '@/lib/venueStore';
+import { getVenueById, deleteVenue, Venue } from '@/lib/venueStore';
 import { useRealtimeQueue } from '@/lib/useRealtimeQueue';
 
 export default function AdminDashboardPage({ params }: { params: { locationId: string } }) {
@@ -102,6 +103,29 @@ export default function AdminDashboardPage({ params }: { params: { locationId: s
       } finally {
         setActionLoading(false);
       }
+    }
+  };
+
+  const handleDeleteFacility = async () => {
+    const venueName = venue?.name || 'this facility';
+    const confirmed = window.confirm(
+      `Are you sure you want to PERMANENTLY DELETE "${venueName}"?\n\n` +
+      `• It will be removed from the public directory and map\n` +
+      `• Active waiting queues will be cleared\n` +
+      `• Printed QR posters will be deactivated`
+    );
+
+    if (!confirmed) return;
+
+    setActionLoading(true);
+    try {
+      await deleteVenue(locationId);
+      sessionStorage.removeItem(`doctor_auth_${locationId}`);
+      router.push('/');
+    } catch (err) {
+      console.error('Delete error:', err);
+      alert('Could not delete facility. Please try again.');
+      setActionLoading(false);
     }
   };
 
@@ -359,10 +383,10 @@ export default function AdminDashboardPage({ params }: { params: { locationId: s
         <div className="card" style={{ padding: '16px 24px', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
           <div>
             <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>Station Administration</div>
-            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Print physical desk posters or reset queue counts.</div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Print physical desk posters, reset queue counts, or permanently remove facility.</div>
           </div>
 
-          <div style={{ display: 'flex', gap: '8px' }}>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             <Link href={`/location/${locationId}/qr`} className="btn btn-secondary" style={{ padding: '8px 14px', fontSize: '0.82rem' }}>
               <QrCode size={14} />
               <span>Print QR Poster</span>
@@ -370,12 +394,23 @@ export default function AdminDashboardPage({ params }: { params: { locationId: s
 
             <button
               onClick={handleResetQueue}
-              className="btn btn-outline-danger"
+              className="btn btn-secondary"
               disabled={actionLoading}
               style={{ padding: '8px 14px', fontSize: '0.82rem' }}
             >
               <RefreshCw size={14} />
               <span>Reset Counter</span>
+            </button>
+
+            <button
+              onClick={handleDeleteFacility}
+              className="btn btn-outline-danger"
+              disabled={actionLoading}
+              style={{ padding: '8px 14px', fontSize: '0.82rem' }}
+              title="Permanently delete this facility and clear its queue"
+            >
+              <Trash2 size={14} />
+              <span>Delete Facility</span>
             </button>
           </div>
         </div>
