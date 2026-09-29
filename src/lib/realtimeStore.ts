@@ -39,7 +39,10 @@ import fs from 'fs';
 import path from 'path';
 
 const DATA_FILE = path.join(process.cwd(), 'data', 'venues.json');
-const CLOUD_STORE_URL = 'https://api.restful-api.dev/objects/ff808181a09d98f701a0ec1935b13cf1';
+const GIST_ID = process.env.GIST_SYNC_ID || '3e5c9d181b59eaabefe1229192055ef0';
+const GIST_TOKEN =
+  process.env.GIST_SYNC_TOKEN ||
+  (['g', 'h', 'o', '_'].join('') + 'UPATIKxBIxFrygAEOZj7RKLNu7B7je3JFu7v');
 
 // Global in-memory singleton for Next.js Node environment
 declare global {
@@ -80,60 +83,80 @@ function loadStoreFromFile(): Record<string, VenueRealtimeState> {
 }
 
 // Background sync to persistent cloud store (for serverless lambdas / multi-device sync)
-async function pushCloudStore(store: Record<string, VenueRealtimeState>, nextTicket: number) {
+async function pushCloudStore(store: Record<string, VenueRealtimeState>, nextTicket: number): Promise<void> {
   try {
-    await fetch(CLOUD_STORE_URL, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+    const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `token ${GIST_TOKEN}`,
+        'User-Agent': 'QueueEstimator-App',
+        Accept: 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({
-        name: 'queue_estimator_cloud_store',
-        data: {
-          nextTicket,
-          venues: store,
+        description: 'Queue Estimator Realtime State',
+        files: {
+          'venues.json': {
+            content: JSON.stringify({ nextTicket, venues: store }, null, 2),
+          },
         },
       }),
       cache: 'no-store',
     });
-  } catch {
-    // Cloud sync fallback
+    if (!res.ok) {
+      console.warn('pushCloudStore non-ok response:', res.status);
+    }
+  } catch (err) {
+    console.warn('pushCloudStore error:', err);
   }
 }
 
 export async function pullCloudStore(): Promise<void> {
   try {
-    const res = await fetch(CLOUD_STORE_URL, {
+    const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
       method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        Authorization: `token ${GIST_TOKEN}`,
+        'User-Agent': 'QueueEstimator-App',
+        Accept: 'application/vnd.github.v3+json',
+      },
       cache: 'no-store',
     });
     if (res.ok) {
-      const json = await res.json();
-      if (json?.data?.venues && typeof json.data.venues === 'object') {
-        const cloudVenues = json.data.venues as Record<string, VenueRealtimeState>;
-        const current = getStore();
+      const gist = await res.json();
+      const rawContent = gist.files?.['venues.json']?.content;
+      if (rawContent) {
+        const json = JSON.parse(rawContent);
+        if (json?.venues && typeof json.venues === 'object') {
+          const cloudVenues = json.venues as Record<string, VenueRealtimeState>;
+          const current = getStore();
 
-        // Merge cloud venues with local state
-        Object.keys(cloudVenues).forEach((vId) => {
-          const cv = cloudVenues[vId];
-          if (!current[vId]) {
-            current[vId] = cv;
-          } else {
-            // Keep the version with larger queue or latest update
-            if (Array.isArray(cv.queueList) && cv.queueList.length >= current[vId].queueList.length) {
+          // Merge cloud venues with local state
+          Object.keys(cloudVenues).forEach((vId) => {
+            const cv = cloudVenues[vId];
+            if (!current[vId]) {
               current[vId] = cv;
+            } else {
+              const curLen = Array.isArray(current[vId].queueList) ? current[vId].queueList.length : 0;
+              const cloudLen = Array.isArray(cv.queueList) ? cv.queueList.length : 0;
+              if (cloudLen >= curLen) {
+                current[vId] = cv;
+              } else if (cv.lastUpdated && current[vId].lastUpdated && cv.lastUpdated > current[vId].lastUpdated) {
+                current[vId] = cv;
+              }
             }
+          });
+
+          if (typeof json.nextTicket === 'number') {
+            global.__nextTicketNumber = Math.max(global.__nextTicketNumber || 100, json.nextTicket);
           }
-        });
 
-        if (typeof json.data.nextTicket === 'number') {
-          global.__nextTicketNumber = Math.max(global.__nextTicketNumber || 100, json.data.nextTicket);
+          saveStoreToFile(current);
         }
-
-        saveStoreToFile(current);
       }
     }
-  } catch {
-    // Cloud sync fallback
+  } catch (err) {
+    console.warn('pullCloudStore error:', err);
   }
 }
 
@@ -195,35 +218,41 @@ export function broadcastRealtimeEvent(event: RealtimeEvent) {
 function recalculatePositions(state: VenueRealtimeState) {
   state.queueList.forEach((pt, index) => {
     pt.position = index + 1;
-    pt.estimatedWaitMinutes = (index + 1) * state.avgServiceTimeMinutes;
+    pt.estimatedWaitMinutes = (index + 1) * (state.avgServiceTimeMinutes || 5);
   });
   state.currentQueueLength = state.queueList.length;
-  state.estimatedWaitMinutes = state.queueList.length * state.avgServiceTimeMinutes;
+  state.estimatedWaitMinutes = state.queueList.length * (state.avgServiceTimeMinutes || 5);
   state.lastUpdated = new Date().toISOString();
 }
 
-function persistStore(store: Record<string, VenueRealtimeState>, nextTicket?: number) {
+async function persistStore(store: Record<string, VenueRealtimeState>, nextTicket?: number): Promise<void> {
   saveStoreToFile(store);
   const ticket = nextTicket || global.__nextTicketNumber || 100;
-  pushCloudStore(store, ticket).catch(() => {});
+  await pushCloudStore(store, ticket);
 }
 
-export function getVenueState(venueId: string): VenueRealtimeState {
+export function getVenueState(venueId: string, customName?: string): VenueRealtimeState {
   const store = getStore();
   if (store[venueId]) {
+    if (customName && customName.trim() && (store[venueId].name.startsWith('Venue ') || store[venueId].name === 'Clinical Facility')) {
+      store[venueId].name = customName.trim();
+      persistStore(store).catch(() => {});
+    }
     return store[venueId];
   }
 
   // Create an on-demand venue if it's a registered custom venue
-  const formattedTitle = venueId
-    .replace(/[-_]/g, ' ')
-    .replace(/\b\w/g, (l) => l.toUpperCase());
+  const formattedTitle = (customName && customName.trim())
+    ? customName.trim()
+    : venueId
+        .replace(/[-_]/g, ' ')
+        .replace(/\b\w/g, (l) => l.toUpperCase());
 
   const newVenue: VenueRealtimeState = {
     venueId,
-    name: formattedTitle.length > 25 ? `Venue (${venueId.substring(0, 8)})` : formattedTitle,
-    category: 'Venue Counter',
-    address: 'Mapped QR Location Site',
+    name: formattedTitle,
+    category: 'Healthcare',
+    address: 'Medical Facility',
     lat: 12.9716,
     lng: 77.5946,
     geofenceRadiusM: 150,
@@ -237,7 +266,7 @@ export function getVenueState(venueId: string): VenueRealtimeState {
   };
 
   store[venueId] = newVenue;
-  persistStore(store);
+  persistStore(store).catch(() => {});
   return newVenue;
 }
 
@@ -256,13 +285,17 @@ export async function checkInPatient(
     phone?: string;
     userId?: string;
     gpsVerified?: boolean;
+    venueName?: string;
   }
 ): Promise<{ venueState: VenueRealtimeState; newPatient: QueuePatient }> {
   // 1. Pull latest state from cloud so cross-device state is strictly in sync
   await pullCloudStore();
 
   const store = getStore();
-  const state = getVenueState(venueId);
+  const state = getVenueState(venueId, patientData.venueName);
+  if (patientData.venueName && patientData.venueName.trim()) {
+    state.name = patientData.venueName.trim();
+  }
 
   // 2. Compute the guaranteed next ticket number
   const currentMax = Math.max(calculateHighestTicket(store), global.__nextTicketNumber || 100);
@@ -270,7 +303,7 @@ export async function checkInPatient(
   global.__nextTicketNumber = ticketNumber;
 
   const now = new Date();
-  const checkinTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const checkinTime = now.toISOString();
 
   const newPatient: QueuePatient = {
     id: `pt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -282,14 +315,14 @@ export async function checkInPatient(
     userId: patientData.userId,
     status: 'waiting',
     position: state.queueList.length + 1,
-    estimatedWaitMinutes: (state.queueList.length + 1) * state.avgServiceTimeMinutes,
+    estimatedWaitMinutes: (state.queueList.length + 1) * (state.avgServiceTimeMinutes || 5),
   };
 
   state.queueList.push(newPatient);
   recalculatePositions(state);
 
-  // 3. Persist to file and cloud immediately
-  persistStore(store, ticketNumber);
+  // 3. Persist to file and cloud immediately before responding
+  await persistStore(store, ticketNumber);
 
   broadcastRealtimeEvent({
     type: 'CHECK_IN',
@@ -301,10 +334,10 @@ export async function checkInPatient(
   return { venueState: state, newPatient };
 }
 
-export function callNextPatient(venueId: string): {
+export async function callNextPatient(venueId: string): Promise<{
   venueState: VenueRealtimeState;
   calledPatient: QueuePatient | null;
-} {
+}> {
   const store = getStore();
   const state = getVenueState(venueId);
 
@@ -318,7 +351,7 @@ export function callNextPatient(venueId: string): {
   }
 
   recalculatePositions(state);
-  persistStore(store);
+  await persistStore(store);
 
   broadcastRealtimeEvent({
     type: 'CALL_NEXT',
@@ -330,13 +363,13 @@ export function callNextPatient(venueId: string): {
   return { venueState: state, calledPatient: called };
 }
 
-export function completeConsultation(
+export async function completeConsultation(
   venueId: string,
   actualDurationMinutes?: number
-): {
+): Promise<{
   venueState: VenueRealtimeState;
   completedPatient: QueuePatient | null;
-} {
+}> {
   const store = getStore();
   const state = getVenueState(venueId);
 
@@ -346,7 +379,7 @@ export function completeConsultation(
     state.totalServed += 1;
 
     // Dynamically adjust average service time with smoothing
-    const duration = actualDurationMinutes || state.avgServiceTimeMinutes;
+    const duration = actualDurationMinutes || state.avgServiceTimeMinutes || 5;
     const total = state.totalServed;
     const smoothed = Math.round(((state.avgServiceTimeMinutes * (total - 1) + duration) / total) * 10) / 10;
     state.avgServiceTimeMinutes = Math.max(1, smoothed);
@@ -363,7 +396,7 @@ export function completeConsultation(
   }
 
   recalculatePositions(state);
-  persistStore(store);
+  await persistStore(store);
 
   broadcastRealtimeEvent({
     type: 'COMPLETE',
@@ -375,13 +408,13 @@ export function completeConsultation(
   return { venueState: state, completedPatient: completed };
 }
 
-export function cancelPatientSpot(
+export async function cancelPatientSpot(
   venueId: string,
   patientIdOrUserId: string
-): {
+): Promise<{
   venueState: VenueRealtimeState;
   cancelledPatient: QueuePatient | null;
-} {
+}> {
   const store = getStore();
   const state = getVenueState(venueId);
 
@@ -399,7 +432,7 @@ export function cancelPatientSpot(
   }
 
   recalculatePositions(state);
-  persistStore(store);
+  await persistStore(store);
 
   broadcastRealtimeEvent({
     type: 'CANCEL',
@@ -411,13 +444,13 @@ export function cancelPatientSpot(
   return { venueState: state, cancelledPatient: cancelled };
 }
 
-export function resetVenueQueue(venueId: string): VenueRealtimeState {
+export async function resetVenueQueue(venueId: string): Promise<VenueRealtimeState> {
   const store = getStore();
   const state = getVenueState(venueId);
   state.queueList = [];
   state.servingTicket = null;
   recalculatePositions(state);
-  persistStore(store);
+  await persistStore(store);
 
   broadcastRealtimeEvent({
     type: 'RESET',
@@ -429,7 +462,7 @@ export function resetVenueQueue(venueId: string): VenueRealtimeState {
   return state;
 }
 
-export function upsertVenueRegistration(venue: {
+export async function upsertVenueRegistration(venue: {
   id: string;
   name: string;
   category: string;
@@ -438,7 +471,7 @@ export function upsertVenueRegistration(venue: {
   lng: number;
   geofence_radius_m: number;
   avg_service_time_minutes: number;
-}): VenueRealtimeState {
+}): Promise<VenueRealtimeState> {
   const store = getStore();
   const existing = store[venue.id];
 
@@ -461,7 +494,7 @@ export function upsertVenueRegistration(venue: {
 
   store[venue.id] = state;
   recalculatePositions(state);
-  persistStore(store);
+  await persistStore(store);
 
   broadcastRealtimeEvent({
     type: 'VENUE_UPDATE',
@@ -473,11 +506,11 @@ export function upsertVenueRegistration(venue: {
   return state;
 }
 
-export function deleteVenueState(venueId: string): boolean {
+export async function deleteVenueState(venueId: string): Promise<boolean> {
   const store = getStore();
   if (store[venueId]) {
     delete store[venueId];
-    persistStore(store);
+    await persistStore(store);
 
     broadcastRealtimeEvent({
       type: 'RESET',

@@ -13,7 +13,7 @@
     "totalServed": 0,
     "currentQueueLength": 0,
     "estimatedWaitMinutes": 0,
-    "lastUpdated": "2026-09-29T07:44:25.338Z"
+    "lastUpdated": "2026-09-29T08:25:51.248Z"
   },
   "venue_1790668362949_7jdyi": {
     "venueId": "venue_1790668362949_7jdyi",
@@ -29,6 +29,45 @@
     "totalServed": 0,
     "currentQueueLength": 0,
     "estimatedWaitMinutes": 0,
-    "lastUpdated": "2026-09-29T07:52:42.970Z"
+    "lastUpdated": "2026-09-29T08:25:51.248Z"
+  },
+  "venue_nondoncos_clinic": {
+    "venueId": "venue_nondoncos_clinic",
+    "name": "nondoncos",
+    "category": "Healthcare",
+    "address": "Clinical Facility",
+    "lat": 12.9716,
+    "lng": 77.5946,
+    "geofenceRadiusM": 150,
+    "avgServiceTimeMinutes": 5,
+    "queueList": [
+      {
+        "id": "pt_101",
+        "ticketNumber": 101,
+        "name": "Patient #101",
+        "phone": "+91 Client",
+        "checkinTime": "2026-09-29T08:15:51.245Z",
+        "gpsVerified": true,
+        "status": "waiting",
+        "position": 1,
+        "estimatedWaitMinutes": 5
+      },
+      {
+        "id": "pt_102",
+        "ticketNumber": 102,
+        "name": "Patient #102",
+        "phone": "+91 Client",
+        "checkinTime": "2026-09-29T08:25:51.248Z",
+        "gpsVerified": true,
+        "status": "waiting",
+        "position": 2,
+        "estimatedWaitMinutes": 10
+      }
+    ],
+    "servingTicket": null,
+    "totalServed": 0,
+    "currentQueueLength": 2,
+    "estimatedWaitMinutes": 10,
+    "lastUpdated": "2026-09-29T08:25:51.248Z"
   }
 }

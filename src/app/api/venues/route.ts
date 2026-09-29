@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
-import { getAllVenuesState, upsertVenueRegistration, deleteVenueState } from '@/lib/realtimeStore';
+import { getAllVenuesState, upsertVenueRegistration, deleteVenueState, pullCloudStore } from '@/lib/realtimeStore';
 import { getSupabaseAdmin } from '@/lib/supabase';
 
 export async function GET() {
   try {
+    await pullCloudStore();
     const realtimeState = getAllVenuesState();
     const venuesList = Object.values(realtimeState).map((v) => ({
       id: v.venueId,
@@ -14,9 +15,9 @@ export async function GET() {
       lng: v.lng,
       geofence_radius_m: v.geofenceRadiusM,
       avg_service_time_minutes: v.avgServiceTimeMinutes,
-      current_queue_length: v.currentQueueLength,
-      total_served: v.totalServed,
-      created_at: v.lastUpdated,
+      current_queue_length: Array.isArray(v.queueList) ? v.queueList.length : (v.currentQueueLength || 0),
+      total_served: v.totalServed || 0,
+      created_at: v.lastUpdated || new Date().toISOString(),
       is_custom: true,
     }));
 
@@ -84,6 +85,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    await pullCloudStore();
     const body = await request.json();
     const { name, category, address, lat, lng, geofence_radius_m, avg_service_time_minutes } = body;
 
@@ -106,8 +108,8 @@ export async function POST(request: Request) {
       avg_service_time_minutes: Number(avg_service_time_minutes || 5),
     };
 
-    // 1. Save into in-memory real-time store
-    upsertVenueRegistration(fullVenue);
+    // 1. Save into in-memory real-time store & push to persistent cloud store
+    await upsertVenueRegistration(fullVenue);
 
     // 2. Best-effort insert into Supabase
     const supabaseAdmin = getSupabaseAdmin();
@@ -147,8 +149,8 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: 'Missing venue id parameter' }, { status: 400 });
     }
 
-    // 1. Delete from realtime store and disk
-    deleteVenueState(id);
+    // 1. Delete from realtime store and cloud
+    await deleteVenueState(id);
 
     // 2. Best-effort delete from Supabase
     const supabaseAdmin = getSupabaseAdmin();

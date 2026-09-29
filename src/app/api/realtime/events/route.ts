@@ -8,6 +8,7 @@ import {
   cancelPatientSpot,
   resetVenueQueue,
   upsertVenueRegistration,
+  pullCloudStore,
 } from '@/lib/realtimeStore';
 
 export const dynamic = 'force-dynamic';
@@ -15,6 +16,8 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const venueId = searchParams.get('venueId');
+
+  await pullCloudStore();
 
   if (venueId) {
     const venue = getVenueState(venueId);
@@ -52,13 +55,13 @@ export async function POST(request: Request) {
       }
 
       case 'CALL_NEXT': {
-        const { venueState, calledPatient } = callNextPatient(venueId);
+        const { venueState, calledPatient } = await callNextPatient(venueId);
         result = { venueState, calledPatient };
         break;
       }
 
       case 'COMPLETE': {
-        const { venueState, completedPatient } = completeConsultation(
+        const { venueState, completedPatient } = await completeConsultation(
           venueId,
           payload?.actualDurationMinutes
         );
@@ -68,19 +71,19 @@ export async function POST(request: Request) {
 
       case 'CANCEL': {
         const patientId = payload?.patientId || payload?.userId;
-        const { venueState, cancelledPatient } = cancelPatientSpot(venueId, patientId);
+        const { venueState, cancelledPatient } = await cancelPatientSpot(venueId, patientId);
         result = { venueState, cancelledPatient };
         break;
       }
 
       case 'RESET': {
-        const venueState = resetVenueQueue(venueId);
+        const venueState = await resetVenueQueue(venueId);
         result = { venueState };
         break;
       }
 
       case 'REGISTER_VENUE': {
-        const venueState = upsertVenueRegistration(payload);
+        const venueState = await upsertVenueRegistration(payload);
         result = { venueState };
         break;
       }

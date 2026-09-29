@@ -41,6 +41,19 @@ export default function MyQueuePage() {
   // Real-Time Queue Hook
   const { venues, connected, dispatchAction, lastEvent } = useRealtimeQueue(checkIn?.location_id);
 
+  function formatCheckinTime(timeVal?: string): string {
+    if (!timeVal) return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const str = String(timeVal).trim();
+    if (/^\d{1,2}:\d{2}(:\d{2})?(\s*[APap][Mm])?$/.test(str)) {
+      return str;
+    }
+    const d = new Date(str);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    return str;
+  }
+
   const loadActiveQueue = useCallback(async () => {
     setLoading(true);
     setActionError('');
@@ -50,7 +63,11 @@ export default function MyQueuePage() {
     if (demoCheckIn) {
       try {
         const parsed = JSON.parse(demoCheckIn);
-        setCheckIn(parsed);
+        const waitMin = parsed.avg_wait_minutes ?? parsed.estimated_wait_minutes ?? (parsed.position ? parsed.position * 5 : 5);
+        setCheckIn({
+          ...parsed,
+          avg_wait_minutes: waitMin,
+        });
         setLoading(false);
         return;
       } catch {
@@ -163,6 +180,7 @@ export default function MyQueuePage() {
               ...prev,
               position: newPos,
               avg_wait_minutes: newWait,
+              location_name: currentVenue.name || prev.location_name,
               status: 'waiting',
             }
           : null
@@ -354,7 +372,7 @@ export default function MyQueuePage() {
               </h1>
               <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px' }}>
                 <Clock size={13} />
-                Checked in at {new Date(checkIn.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                Checked in at {formatCheckinTime(checkIn.created_at)}
               </span>
             </div>
 
@@ -401,7 +419,8 @@ export default function MyQueuePage() {
                   <div>
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block' }}>Estimated Wait</span>
                     <strong style={{ fontSize: '1.4rem', color: 'var(--text-primary)' }}>
-                      ~{checkIn.avg_wait_minutes} <span style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-secondary)' }}>mins</span>
+                      ~{checkIn.avg_wait_minutes ?? (checkIn.position ? checkIn.position * 5 : 5)}{' '}
+                      <span style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-secondary)' }}>mins</span>
                     </strong>
                   </div>
                   <div style={{ width: '1px', height: '32px', backgroundColor: 'var(--border-default)' }} />

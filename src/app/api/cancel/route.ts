@@ -19,7 +19,7 @@ export async function POST(request: Request) {
     const targetId = queue_event_id || user?.id || '';
 
     // 1. Instantly update Realtime Store & Broadcast to all SSE listeners
-    const { venueState, cancelledPatient } = cancelPatientSpot(location_id, targetId);
+    const { venueState, cancelledPatient } = await cancelPatientSpot(location_id, targetId);
 
     // 2. Best-effort Supabase insert
     const supabaseAdmin = getSupabaseAdmin();

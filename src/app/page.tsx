@@ -58,10 +58,56 @@ export default function LandingPage() {
     setLoading(true);
     try {
       const nearVenues: Venue[] = getVenuesNearGps(lat, lng);
-      const mapped: Location[] = nearVenues.map((v) => {
+      const venueMap = new Map<string, Venue>();
+      nearVenues.forEach((v) => venueMap.set(v.id, v));
+
+      // Also merge any venues received from real-time store / cloud
+      if (realtimeVenues && typeof realtimeVenues === 'object') {
+        Object.values(realtimeVenues).forEach((rt) => {
+          if (!rt || !rt.venueId) return;
+          const existing = venueMap.get(rt.venueId);
+          const queueLength = Array.isArray(rt.queueList) ? rt.queueList.length : (rt.currentQueueLength || 0);
+
+          if (existing) {
+            existing.name = rt.name || existing.name;
+            existing.current_queue_length = queueLength;
+            existing.avg_service_time_minutes = rt.avgServiceTimeMinutes || existing.avg_service_time_minutes;
+          } else {
+            const dist =
+              typeof lat === 'number' && typeof lng === 'number'
+                ? Math.round(calculateDistance(lat, lng, rt.lat, rt.lng))
+                : undefined;
+            venueMap.set(rt.venueId, {
+              id: rt.venueId,
+              name: rt.name,
+              category: rt.category || 'Healthcare',
+              address: rt.address || 'Medical Facility',
+              lat: rt.lat,
+              lng: rt.lng,
+              geofence_radius_m: rt.geofenceRadiusM || 150,
+              avg_service_time_minutes: rt.avgServiceTimeMinutes || 5,
+              current_queue_length: queueLength,
+              total_served: rt.totalServed || 0,
+              distance_meters: dist,
+              is_custom: true,
+            });
+          }
+        });
+      }
+
+      const allVenues = Array.from(venueMap.values());
+      if (typeof lat === 'number' && typeof lng === 'number') {
+        allVenues.sort((a, b) => (a.distance_meters || 0) - (b.distance_meters || 0));
+      }
+
+      const mapped: Location[] = allVenues.map((v) => {
         const rt = realtimeVenues[v.id];
-        const queueLen = rt ? rt.currentQueueLength : (v.current_queue_length ?? 0);
-        const waitMins = rt ? rt.estimatedWaitMinutes : Math.round(queueLen * (v.avg_service_time_minutes || 8));
+        const queueLen = rt
+          ? (Array.isArray(rt.queueList) ? rt.queueList.length : (rt.currentQueueLength || 0))
+          : (v.current_queue_length ?? 0);
+        const waitMins = rt
+          ? (rt.estimatedWaitMinutes || Math.round(queueLen * (rt.avgServiceTimeMinutes || 5)))
+          : Math.round(queueLen * (v.avg_service_time_minutes || 5));
 
         return {
           id: v.id,
@@ -128,10 +174,16 @@ export default function LandingPage() {
     checkUserSession();
     requestGPS();
 
-    // Pull real database locations
+    // Pull real database locations initially and on periodic sync
     syncVenuesFromDatabase().then(() => {
       fetchLocations(userLocation?.lat, userLocation?.lng);
     });
+
+    const syncInterval = setInterval(() => {
+      syncVenuesFromDatabase();
+    }, 4500);
+
+    return () => clearInterval(syncInterval);
   }, [fetchLocations, userLocation?.lat, userLocation?.lng]);
 
   useEffect(() => {
@@ -347,14 +399,18 @@ export default function LandingPage() {
           </div>
 
           <VenueMap
-            venues={getVenuesNearGps(userLocation?.lat, userLocation?.lng).map((v) => {
-              const rt = realtimeVenues[v.id];
-              return {
-                ...v,
-                current_queue_length: rt ? rt.currentQueueLength : (v.current_queue_length ?? 0),
-                avg_service_time_minutes: rt ? rt.avgServiceTimeMinutes : v.avg_service_time_minutes,
-              };
-            })}
+            venues={locations.map((loc) => ({
+              id: loc.id,
+              name: loc.name,
+              category: loc.category,
+              address: loc.address,
+              lat: loc.lat,
+              lng: loc.lng,
+              geofence_radius_m: 150,
+              avg_service_time_minutes: 5,
+              current_queue_length: loc.estimate?.current_queue_length || 0,
+              distance_meters: loc.distance,
+            }))}
             userLat={userLocation?.lat}
             userLng={userLocation?.lng}
           />

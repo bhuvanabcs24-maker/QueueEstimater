@@ -17,14 +17,14 @@ export async function POST(request: Request) {
     }
 
     // 1. Instantly update Realtime Store & Broadcast to all SSE listeners
-    const { venueState, completedPatient } = completeConsultation(
+    const { venueState, completedPatient } = await completeConsultation(
       location_id,
       duration_minutes ? Number(duration_minutes) : undefined
     );
 
     // Also cancel or complete in case specific event was provided
     if (queue_event_id) {
-      cancelPatientSpot(location_id, queue_event_id);
+      await cancelPatientSpot(location_id, queue_event_id);
     }
 
     // 2. Best-effort Supabase insert if available

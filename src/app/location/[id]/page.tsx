@@ -198,6 +198,33 @@ function LocationDetailInner() {
         }
       }
 
+      // 4. Fallback: check /api/realtime/events for live venue state
+      if (!venue) {
+        try {
+          const rtRes = await fetch(`/api/realtime/events?venueId=${encodeURIComponent(locationId)}`);
+          if (rtRes.ok) {
+            const rtData = await rtRes.json();
+            if (rtData.venue) {
+              const v = rtData.venue;
+              venue = {
+                id: v.venueId,
+                name: v.name,
+                category: v.category || 'Healthcare',
+                address: v.address || 'Medical Facility',
+                lat: v.lat,
+                lng: v.lng,
+                geofence_radius_m: v.geofenceRadiusM || 150,
+                avg_service_time_minutes: v.avgServiceTimeMinutes || 5,
+                current_queue_length: v.currentQueueLength || 0,
+              };
+              registerNewVenue(venue);
+            }
+          }
+        } catch {
+          // Ignore
+        }
+      }
+
       if (!venue) {
         setLocation(null);
         setError('This facility is not registered in the database.');
@@ -281,6 +308,7 @@ function LocationDetailInner() {
         },
         body: JSON.stringify({
           location_id: location.id,
+          location_name: location.name,
           lat: userCoords?.lat,
           lng: userCoords?.lng,
           gps_bypass: !isGpsSuccess,
@@ -295,6 +323,8 @@ function LocationDetailInner() {
         throw new Error(data.error || 'Failed to check in.');
       }
 
+      const waitMinutes = data.estimated_wait_minutes || data.avg_wait_minutes || location.avg_service_time_minutes || 5;
+
       localStorage.setItem(
         'demo_active_check_in',
         JSON.stringify({
@@ -307,7 +337,8 @@ function LocationDetailInner() {
           created_at: data.created_at || new Date().toISOString(),
           gps_verified: data.gps_verified ?? gpsVerified,
           position: data.position || 1,
-          estimated_wait_minutes: data.estimated_wait_minutes || location.avg_service_time_minutes,
+          estimated_wait_minutes: waitMinutes,
+          avg_wait_minutes: waitMinutes,
         })
       );
 

@@ -2,12 +2,13 @@ import { NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '../../../lib/supabase';
 import { calculateDistance } from '../../../lib/geofence';
 import { getAuthenticatedUser } from '../../../lib/auth';
-import { checkInPatient, getVenueState } from '../../../lib/realtimeStore';
+import { checkInPatient, getVenueState, pullCloudStore } from '../../../lib/realtimeStore';
 
 export async function POST(request: Request) {
   try {
+    await pullCloudStore();
     const body = await request.json().catch(() => ({}));
-    const { location_id, lat, lng, gps_bypass, user_name, phone } = body;
+    const { location_id, location_name, lat, lng, gps_bypass, user_name, phone } = body;
 
     if (!location_id) {
       return NextResponse.json(
@@ -21,7 +22,10 @@ export async function POST(request: Request) {
     const userId = user ? user.id : (body.user_id || `demo-user-${Math.random().toString(36).substring(2, 8)}`);
 
     // Fetch venue configuration from Realtime Store
-    const venue = getVenueState(location_id);
+    const venue = getVenueState(location_id, location_name);
+    if (location_name && typeof location_name === 'string' && location_name.trim()) {
+      venue.name = location_name.trim();
+    }
 
     // Geospatial Verification
     let gpsVerified = false;
@@ -59,6 +63,7 @@ export async function POST(request: Request) {
       phone: phone || user?.phone || '+91 Client',
       userId,
       gpsVerified: isVerifiedCheckIn,
+      venueName: location_name,
     });
 
     // 2. Best-effort write to Supabase if configured and reachable
@@ -91,6 +96,7 @@ export async function POST(request: Request) {
       created_at: newPatient.checkinTime,
       position: newPatient.position,
       estimated_wait_minutes: newPatient.estimatedWaitMinutes,
+      avg_wait_minutes: newPatient.estimatedWaitMinutes,
       venue_state: venueState,
     });
   } catch (err: unknown) {

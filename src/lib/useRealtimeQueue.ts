@@ -179,7 +179,13 @@ export function useRealtimeQueue(targetVenueId?: string) {
 
     connectSSE();
 
+    // Background heartbeat poll (every 3.5s) to guarantee multi-device sync on serverless platforms
+    const pollInterval = setInterval(() => {
+      fetchCurrentState();
+    }, 3500);
+
     return () => {
+      clearInterval(pollInterval);
       if (eventSource) {
         eventSource.close();
       }
