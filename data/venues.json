@@ -13,6 +13,22 @@
     "totalServed": 0,
     "currentQueueLength": 0,
     "estimatedWaitMinutes": 0,
-    "lastUpdated": "2026-09-29T07:43:30.290Z"
+    "lastUpdated": "2026-09-29T07:44:25.338Z"
+  },
+  "venue_1790668362949_7jdyi": {
+    "venueId": "venue_1790668362949_7jdyi",
+    "name": "ieiwheduhw",
+    "category": "Healthcare",
+    "address": "dewbbew",
+    "lat": 12.938136,
+    "lng": 77.565198,
+    "geofenceRadiusM": 150,
+    "avgServiceTimeMinutes": 5,
+    "queueList": [],
+    "servingTicket": null,
+    "totalServed": 0,
+    "currentQueueLength": 0,
+    "estimatedWaitMinutes": 0,
+    "lastUpdated": "2026-09-29T07:52:42.970Z"
   }
 }
