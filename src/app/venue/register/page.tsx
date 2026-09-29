@@ -95,7 +95,7 @@ function RegisterVenueInner() {
     };
 
     if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(success, failure, { enableHighAccuracy: true, timeout: 4000 });
+      navigator.geolocation.getCurrentPosition(success, failure, { enableHighAccuracy: true, maximumAge: 0, timeout: 12000 });
     } else {
       failure({ code: 2, message: 'Geolocation unsupported', PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3 });
     }

@@ -151,7 +151,7 @@ export default function LandingPage() {
       () => {
         setGpsLoading(false);
       },
-      { enableHighAccuracy: true, timeout: 8000 }
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 12000 }
     );
   };
 

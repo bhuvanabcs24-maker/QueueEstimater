@@ -13,6 +13,7 @@ import {
   Navigation,
   Activity,
   PlusCircle,
+  RefreshCw,
 } from 'lucide-react';
 
 interface Location {
@@ -47,6 +48,7 @@ function LocationDetailInner() {
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'loading' | 'success' | 'denied' | 'error'>('idle');
   const [distanceToLocation, setDistanceToLocation] = useState<number | null>(null);
   const [withinGeofence, setWithinGeofence] = useState(false);
+  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
 
   const [submittingCheckIn, setSubmittingCheckIn] = useState(false);
   const [error, setError] = useState('');
@@ -59,21 +61,39 @@ function LocationDetailInner() {
     }
 
     setGpsStatus('loading');
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const uLat = position.coords.latitude;
-        const uLng = position.coords.longitude;
-        setUserCoords({ lat: uLat, lng: uLng });
-        setGpsStatus('success');
 
-        const dist = calculateDistance(uLat, uLng, loc.lat, loc.lng);
-        setDistanceToLocation(dist);
-        setWithinGeofence(dist <= loc.geofence_radius_m);
+    const handleSuccess = (position: GeolocationPosition) => {
+      const uLat = position.coords.latitude;
+      const uLng = position.coords.longitude;
+      const accuracy = Math.round(position.coords.accuracy || 0);
+
+      setUserCoords({ lat: uLat, lng: uLng });
+      setGpsAccuracy(accuracy);
+      setGpsStatus('success');
+
+      const dist = calculateDistance(uLat, uLng, loc.lat, loc.lng);
+      setDistanceToLocation(dist);
+
+      // Adaptive mobile tolerance for indoor cellular/Wi-Fi positioning
+      const buffer = Math.min(accuracy, 50);
+      const effectiveRadius = (loc.geofence_radius_m || 150) + buffer;
+      setWithinGeofence(dist <= effectiveRadius);
+    };
+
+    // 1. Try high-precision GPS satellite fix without stale cache
+    navigator.geolocation.getCurrentPosition(
+      handleSuccess,
+      () => {
+        // Fallback: standard resolution if satellite fix timed out indoors
+        navigator.geolocation.getCurrentPosition(
+          handleSuccess,
+          (err) => {
+            setGpsStatus(err.code === err.PERMISSION_DENIED ? 'denied' : 'error');
+          },
+          { enableHighAccuracy: false, maximumAge: 30000, timeout: 8000 }
+        );
       },
-      (geoError) => {
-        setGpsStatus(geoError.code === geoError.PERMISSION_DENIED ? 'denied' : 'error');
-      },
-      { enableHighAccuracy: true, timeout: 8000 }
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 12000 }
     );
   }, []);
 
@@ -414,30 +434,46 @@ function LocationDetailInner() {
                 <Navigation size={18} color="#3b82f6" />
                 <span style={{ fontSize: '0.92rem', fontWeight: 700 }}>Geofence Security Verification</span>
               </div>
-              {gpsStatus === 'success' && (
-                <span className={`badge ${withinGeofence ? 'badge-success' : 'badge-danger'}`}>
-                  {withinGeofence ? 'Within Perimeter' : 'Too Far'}
-                </span>
-              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => location && triggerGpsCheck(location)}
+                  className="btn btn-secondary"
+                  disabled={gpsStatus === 'loading'}
+                  style={{ padding: '4px 10px', fontSize: '0.75rem', width: 'auto', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  title="Force fresh GPS satellite location polling"
+                >
+                  <RefreshCw size={12} className={gpsStatus === 'loading' ? 'spin' : ''} />
+                  <span>{gpsStatus === 'loading' ? 'Locating...' : 'Refresh GPS'}</span>
+                </button>
+                {gpsStatus === 'success' && (
+                  <span className={`badge ${withinGeofence ? 'badge-success' : 'badge-danger'}`}>
+                    {withinGeofence ? 'Within Perimeter' : 'Too Far'}
+                  </span>
+                )}
+              </div>
             </div>
 
             <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              {gpsStatus === 'loading' && 'Acquiring GPS coordinates for on-site proximity validation...'}
+              {gpsStatus === 'loading' && 'Acquiring high-precision GPS coordinates from satellite sensors...'}
               {gpsStatus === 'success' && withinGeofence && (
-                <span>GPS confirmed on-site (~{Math.round(distanceToLocation || 0)}m away, perimeter is {location.geofence_radius_m}m).</span>
+                <span>
+                  GPS confirmed on-site (~{Math.round(distanceToLocation || 0)}m away
+                  {gpsAccuracy ? `, ±${gpsAccuracy}m precision` : ''}, perimeter is {location.geofence_radius_m}m).
+                </span>
               )}
               {gpsStatus === 'success' && !withinGeofence && (
                 <span style={{ color: 'var(--status-danger)' }}>
-                  You are {Math.round(distanceToLocation || 0)}m away. You must be within {location.geofence_radius_m}m to check in.
+                  You are ~{Math.round(distanceToLocation || 0)}m away{gpsAccuracy ? ` (±${gpsAccuracy}m precision)` : ''}. You must be within {location.geofence_radius_m}m of {location.name} to check in.
                 </span>
               )}
               {gpsStatus === 'denied' && (
                 <span style={{ color: 'var(--status-warning)' }}>
-                  Location permissions denied. GPS validation will use default proximity check-in.
+                  Location permissions denied on this device. Click &apos;Refresh GPS&apos; after granting browser permission.
                 </span>
               )}
               {gpsStatus === 'error' && (
-                <span>Unable to fetch GPS hardware coordinates. Proceeding with standard verification.</span>
+                <span>Unable to fetch GPS hardware coordinates. Click &apos;Refresh GPS&apos; to re-poll satellite fix.</span>
               )}
             </div>
           </div>
@@ -459,14 +495,35 @@ function LocationDetailInner() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {hasExistingCheckIn ? (
-              <button
-                id="view-ticket-btn"
-                onClick={() => router.push('/my-queue')}
-                className="btn btn-secondary"
-                style={{ padding: '14px', fontSize: '1rem' }}
-              >
-                {ctaText}
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <button
+                  id="view-ticket-btn"
+                  onClick={() => router.push('/my-queue')}
+                  className="btn btn-secondary"
+                  style={{ padding: '14px', fontSize: '1rem' }}
+                >
+                  {ctaText}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    localStorage.removeItem('demo_active_check_in');
+                    setHasExistingCheckIn(false);
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-muted)',
+                    fontSize: '0.8rem',
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                    padding: '6px',
+                    textAlign: 'center',
+                  }}
+                >
+                  Leave previous spot and join line for a new token →
+                </button>
+              </div>
             ) : (
               <button
                 id="check-in-btn"

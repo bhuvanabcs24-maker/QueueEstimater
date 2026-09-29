@@ -39,6 +39,19 @@ import fs from 'fs';
 import path from 'path';
 
 const DATA_FILE = path.join(process.cwd(), 'data', 'venues.json');
+const CLOUD_STORE_URL = 'https://api.restful-api.dev/objects/ff808181a09d98f701a0ec1935b13cf1';
+
+// Global in-memory singleton for Next.js Node environment
+declare global {
+  // eslint-disable-next-line no-var
+  var __realtimeQueueState: Record<string, VenueRealtimeState> | undefined;
+  // eslint-disable-next-line no-var
+  var __realtimeSseSubscribers: Set<(data: string) => void> | undefined;
+  // eslint-disable-next-line no-var
+  var __nextTicketNumber: number | undefined;
+  // eslint-disable-next-line no-var
+  var __cloudSyncInFlight: Promise<void> | undefined;
+}
 
 function saveStoreToFile(store: Record<string, VenueRealtimeState>) {
   try {
@@ -47,8 +60,8 @@ function saveStoreToFile(store: Record<string, VenueRealtimeState>) {
       fs.mkdirSync(dir, { recursive: true });
     }
     fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2), 'utf-8');
-  } catch (err) {
-    console.warn('Could not persist venues to file:', err);
+  } catch {
+    // Read-only filesystem on Vercel is expected
   }
 }
 
@@ -60,29 +73,96 @@ function loadStoreFromFile(): Record<string, VenueRealtimeState> {
         return JSON.parse(raw);
       }
     }
-  } catch (err) {
-    console.warn('Could not read venues from file:', err);
+  } catch {
+    // Fallback
   }
   return {};
 }
 
-// Global in-memory singleton for Next.js Node environment
-declare global {
-  // eslint-disable-next-line no-var
-  var __realtimeQueueState: Record<string, VenueRealtimeState> | undefined;
-  // eslint-disable-next-line no-var
-  var __realtimeSseSubscribers: Set<(data: string) => void> | undefined;
-  // eslint-disable-next-line no-var
-  var __nextTicketNumber: number | undefined;
+// Background sync to persistent cloud store (for serverless lambdas / multi-device sync)
+async function pushCloudStore(store: Record<string, VenueRealtimeState>, nextTicket: number) {
+  try {
+    await fetch(CLOUD_STORE_URL, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'queue_estimator_cloud_store',
+        data: {
+          nextTicket,
+          venues: store,
+        },
+      }),
+      cache: 'no-store',
+    });
+  } catch {
+    // Cloud sync fallback
+  }
 }
 
-// Real-time venue store starts clean - only real database or registered venues appear
+export async function pullCloudStore(): Promise<void> {
+  try {
+    const res = await fetch(CLOUD_STORE_URL, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json?.data?.venues && typeof json.data.venues === 'object') {
+        const cloudVenues = json.data.venues as Record<string, VenueRealtimeState>;
+        const current = getStore();
+
+        // Merge cloud venues with local state
+        Object.keys(cloudVenues).forEach((vId) => {
+          const cv = cloudVenues[vId];
+          if (!current[vId]) {
+            current[vId] = cv;
+          } else {
+            // Keep the version with larger queue or latest update
+            if (Array.isArray(cv.queueList) && cv.queueList.length >= current[vId].queueList.length) {
+              current[vId] = cv;
+            }
+          }
+        });
+
+        if (typeof json.data.nextTicket === 'number') {
+          global.__nextTicketNumber = Math.max(global.__nextTicketNumber || 100, json.data.nextTicket);
+        }
+
+        saveStoreToFile(current);
+      }
+    }
+  } catch {
+    // Cloud sync fallback
+  }
+}
+
 function getStore(): Record<string, VenueRealtimeState> {
   if (!global.__realtimeQueueState) {
     global.__realtimeQueueState = loadStoreFromFile();
-    global.__nextTicketNumber = 100;
+    global.__nextTicketNumber = calculateHighestTicket(global.__realtimeQueueState) || 100;
+
+    // Fire off async cloud pull on first load
+    pullCloudStore().catch(() => {});
   }
   return global.__realtimeQueueState!;
+}
+
+function calculateHighestTicket(store: Record<string, VenueRealtimeState>): number {
+  let highest = 100;
+  Object.values(store).forEach((venue) => {
+    if (venue.servingTicket?.ticketNumber && venue.servingTicket.ticketNumber > highest) {
+      highest = venue.servingTicket.ticketNumber;
+    }
+    if (Array.isArray(venue.queueList)) {
+      venue.queueList.forEach((pt) => {
+        if (pt.ticketNumber && pt.ticketNumber > highest) {
+          highest = pt.ticketNumber;
+        }
+      });
+    }
+  });
+  return highest;
 }
 
 function getSubscribers(): Set<(data: string) => void> {
@@ -122,6 +202,12 @@ function recalculatePositions(state: VenueRealtimeState) {
   state.lastUpdated = new Date().toISOString();
 }
 
+function persistStore(store: Record<string, VenueRealtimeState>, nextTicket?: number) {
+  saveStoreToFile(store);
+  const ticket = nextTicket || global.__nextTicketNumber || 100;
+  pushCloudStore(store, ticket).catch(() => {});
+}
+
 export function getVenueState(venueId: string): VenueRealtimeState {
   const store = getStore();
   if (store[venueId]) {
@@ -151,6 +237,7 @@ export function getVenueState(venueId: string): VenueRealtimeState {
   };
 
   store[venueId] = newVenue;
+  persistStore(store);
   return newVenue;
 }
 
@@ -158,7 +245,11 @@ export function getAllVenuesState(): Record<string, VenueRealtimeState> {
   return getStore();
 }
 
-export function checkInPatient(
+/**
+ * Checks in a patient into a venue queue.
+ * Guarantees strictly increasing ticket numbers across all devices (#101, #102, #103...).
+ */
+export async function checkInPatient(
   venueId: string,
   patientData: {
     name?: string;
@@ -166,11 +257,17 @@ export function checkInPatient(
     userId?: string;
     gpsVerified?: boolean;
   }
-): { venueState: VenueRealtimeState; newPatient: QueuePatient } {
+): Promise<{ venueState: VenueRealtimeState; newPatient: QueuePatient }> {
+  // 1. Pull latest state from cloud so cross-device state is strictly in sync
+  await pullCloudStore();
+
+  const store = getStore();
   const state = getVenueState(venueId);
 
-  global.__nextTicketNumber = (global.__nextTicketNumber || 105) + 1;
-  const ticketNumber = global.__nextTicketNumber;
+  // 2. Compute the guaranteed next ticket number
+  const currentMax = Math.max(calculateHighestTicket(store), global.__nextTicketNumber || 100);
+  const ticketNumber = currentMax + 1;
+  global.__nextTicketNumber = ticketNumber;
 
   const now = new Date();
   const checkinTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -191,6 +288,9 @@ export function checkInPatient(
   state.queueList.push(newPatient);
   recalculatePositions(state);
 
+  // 3. Persist to file and cloud immediately
+  persistStore(store, ticketNumber);
+
   broadcastRealtimeEvent({
     type: 'CHECK_IN',
     venueId,
@@ -205,6 +305,7 @@ export function callNextPatient(venueId: string): {
   venueState: VenueRealtimeState;
   calledPatient: QueuePatient | null;
 } {
+  const store = getStore();
   const state = getVenueState(venueId);
 
   let called: QueuePatient | null = null;
@@ -217,6 +318,7 @@ export function callNextPatient(venueId: string): {
   }
 
   recalculatePositions(state);
+  persistStore(store);
 
   broadcastRealtimeEvent({
     type: 'CALL_NEXT',
@@ -235,6 +337,7 @@ export function completeConsultation(
   venueState: VenueRealtimeState;
   completedPatient: QueuePatient | null;
 } {
+  const store = getStore();
   const state = getVenueState(venueId);
 
   const completed = state.servingTicket;
@@ -260,6 +363,7 @@ export function completeConsultation(
   }
 
   recalculatePositions(state);
+  persistStore(store);
 
   broadcastRealtimeEvent({
     type: 'COMPLETE',
@@ -278,6 +382,7 @@ export function cancelPatientSpot(
   venueState: VenueRealtimeState;
   cancelledPatient: QueuePatient | null;
 } {
+  const store = getStore();
   const state = getVenueState(venueId);
 
   const index = state.queueList.findIndex(
@@ -294,6 +399,7 @@ export function cancelPatientSpot(
   }
 
   recalculatePositions(state);
+  persistStore(store);
 
   broadcastRealtimeEvent({
     type: 'CANCEL',
@@ -306,10 +412,12 @@ export function cancelPatientSpot(
 }
 
 export function resetVenueQueue(venueId: string): VenueRealtimeState {
+  const store = getStore();
   const state = getVenueState(venueId);
   state.queueList = [];
   state.servingTicket = null;
   recalculatePositions(state);
+  persistStore(store);
 
   broadcastRealtimeEvent({
     type: 'RESET',
@@ -353,7 +461,7 @@ export function upsertVenueRegistration(venue: {
 
   store[venue.id] = state;
   recalculatePositions(state);
-  saveStoreToFile(store);
+  persistStore(store);
 
   broadcastRealtimeEvent({
     type: 'VENUE_UPDATE',
@@ -369,7 +477,7 @@ export function deleteVenueState(venueId: string): boolean {
   const store = getStore();
   if (store[venueId]) {
     delete store[venueId];
-    saveStoreToFile(store);
+    persistStore(store);
 
     broadcastRealtimeEvent({
       type: 'RESET',

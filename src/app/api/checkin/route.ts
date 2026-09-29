@@ -29,7 +29,9 @@ export async function POST(request: Request) {
 
     if (typeof lat === 'number' && typeof lng === 'number' && venue) {
       distanceMeters = calculateDistance(lat, lng, venue.lat, venue.lng);
-      gpsVerified = distanceMeters <= venue.geofenceRadiusM;
+      // Adaptive 50m tolerance buffer for mobile indoor GPS variance
+      const effectiveRadius = (venue.geofenceRadiusM || 150) + 50;
+      gpsVerified = distanceMeters <= effectiveRadius;
     }
 
     if (
@@ -52,7 +54,7 @@ export async function POST(request: Request) {
     const isVerifiedCheckIn = gpsVerified || Boolean(gps_bypass);
 
     // 1. Instantly register in the Realtime Store & Broadcast to all SSE listeners
-    const { venueState, newPatient } = checkInPatient(location_id, {
+    const { venueState, newPatient } = await checkInPatient(location_id, {
       name: user_name || (user?.user_metadata?.full_name ? user.user_metadata.full_name : `Patient #${venue.queueList.length + 105}`),
       phone: phone || user?.phone || '+91 Client',
       userId,

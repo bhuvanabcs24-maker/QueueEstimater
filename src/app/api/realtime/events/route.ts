@@ -41,7 +41,7 @@ export async function POST(request: Request) {
 
     switch (action) {
       case 'CHECK_IN': {
-        const { venueState, newPatient } = checkInPatient(venueId, {
+        const { venueState, newPatient } = await checkInPatient(venueId, {
           name: payload?.name,
           phone: payload?.phone,
           userId: payload?.userId,
